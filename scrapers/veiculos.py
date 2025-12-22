@@ -20,60 +20,47 @@ GLOBAL_SESSION = None
 
 
 class CookieManager:
-    """🍪 Gerenciador de cookies compartilhados entre todas as fontes"""
+    """🍪 Gerenciador de cookies para Megaleilões e Superbid (Sodré usa estratégia própria)"""
     
     USER_AGENTS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     
     @classmethod
     def criar_session_global(cls):
-        """Cria session com cookies capturados do Playwright"""
+        """Cria session com cookies para Megaleilões e Superbid"""
         global GLOBAL_SESSION
         
         if GLOBAL_SESSION is not None:
             return GLOBAL_SESSION
         
-        print("\n🍪 CAPTURANDO COOKIES COM PLAYWRIGHT...")
+        print("\n🍪 CRIANDO SESSION GLOBAL (Megaleilões + Superbid)...")
         
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
                     headless=True,
-                    args=[
-                        '--disable-blink-features=AutomationControlled',
-                        '--disable-dev-shm-usage',
-                        '--no-sandbox',
-                        '--disable-web-security',
-                    ]
+                    args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
                 )
                 
                 user_agent = random.choice(cls.USER_AGENTS)
-                
                 context = browser.new_context(
                     user_agent=user_agent,
                     viewport={'width': 1920, 'height': 1080},
                     locale='pt-BR',
-                    timezone_id='America/Sao_Paulo',
-                    color_scheme='light',
                 )
-                
-                # Script anti-detecção
-                context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                    Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en']});
-                    window.chrome = {runtime: {}};
-                """)
                 
                 page = context.new_page()
                 
-                # Visita múltiplos sites para coletar cookies
+                context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.chrome = {runtime: {}};
+                """)
+                
+                # Visita sites (exceto Sodré)
                 sites = [
-                    "https://www.sodresantoro.com.br",
                     "https://www.megaleiloes.com.br",
                     "https://exchange.superbid.net",
                 ]
@@ -82,51 +69,39 @@ class CookieManager:
                 
                 for site in sites:
                     try:
-                        print(f"  🌐 Visitando {site}...")
-                        page.goto(site, wait_until="domcontentloaded", timeout=30000)
-                        time.sleep(random.uniform(2, 4))
+                        page.goto(site, wait_until="domcontentloaded", timeout=20000)
+                        time.sleep(2)
                         
                         cookies = context.cookies()
                         for cookie in cookies:
                             all_cookies[cookie['name']] = cookie['value']
-                    except Exception as e:
-                        print(f"  ⚠️ Erro em {site}: {e}")
+                    except:
+                        pass
                 
                 browser.close()
                 
-                print(f"  ✅ {len(all_cookies)} cookies capturados")
+                print(f"  ✅ {len(all_cookies)} cookies capturados\n")
                 
-                # Cria session com os cookies
+                # Cria session
                 session = requests.Session()
                 session.cookies.update(all_cookies)
-                
-                # Headers padrão para todas as requisições
                 session.headers.update({
                     "User-Agent": user_agent,
                     "Accept": "*/*",
-                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Cache-Control": "max-age=0",
+                    "Accept-Language": "pt-BR,pt;q=0.9",
                 })
                 
                 GLOBAL_SESSION = session
                 return session
                 
         except Exception as e:
-            print(f"  ❌ Erro ao capturar cookies: {e}")
-            print("  ⚠️ Criando session sem cookies...")
+            print(f"  ⚠️ Erro: {e}")
+            print("  ℹ️ Criando session básica...\n")
             
-            # Fallback: session básica
             session = requests.Session()
             session.headers.update({
                 "User-Agent": random.choice(cls.USER_AGENTS),
                 "Accept": "*/*",
-                "Accept-Language": "pt-BR,pt;q=0.9",
             })
             
             GLOBAL_SESSION = session
@@ -182,18 +157,79 @@ class Normalizador:
 
 
 class SodreExtractor:
-    """🔵 SODRÉ - USA COOKIES GLOBAIS"""
+    """🔵 SODRÉ - ESTRATÉGIA VENCEDORA COM COOKIES EXPLÍCITOS"""
     
     API = "https://www.sodresantoro.com.br/api/search-lots"
     INDICES = ["veiculos", "judiciais-veiculos"]
     ACTIVE_STATUS = [1, 2, 3]
     
+    def __init__(self):
+        # 🔥 Session isolada (não compartilhada)
+        self.session = requests.Session()
+        self.cookies = {}
+    
+    def _capturar_cookies_sodre(self):
+        """Captura cookies específicos do Sodré com fallback de 2 páginas"""
+        print("  🍪 Obtendo cookies...")
+        
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--no-sandbox',
+                    ]
+                )
+                
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='pt-BR',
+                    timezone_id='America/Sao_Paulo',
+                )
+                
+                page = context.new_page()
+                
+                # 🔥 FIX 1: page.add_init_script (após criar page)
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.chrome = {runtime: {}};
+                """)
+                
+                # 🔥 FIX 2: Tenta homepage primeiro
+                page.goto("https://www.sodresantoro.com.br", wait_until="networkidle", timeout=60000)
+                time.sleep(5)  # 🔥 FIX 3: Aguarda 5 segundos
+                
+                cookies = context.cookies()
+                
+                # 🔥 FIX 4: Fallback para página interna se falhar
+                if not cookies:
+                    print("    ⚠️ Tentando página de veículos...")
+                    page.goto("https://www.sodresantoro.com.br/veiculos/lotes", wait_until="networkidle")
+                    time.sleep(3)
+                    cookies = context.cookies()
+                
+                browser.close()
+                
+                cookie_dict = {c["name"]: c["value"] for c in cookies}
+                print(f"  ✅ {len(cookie_dict)} cookies")
+                
+                return cookie_dict
+                
+        except Exception as e:
+            print(f"  ❌ Erro: {e}")
+            return {}
+    
     def extrair(self):
         print("\n🔵 SODRÉ")
         
-        session = GLOBAL_SESSION
-        if not session:
-            print("  ❌ Session global não inicializada")
+        # Captura cookies específicos para Sodré
+        self.cookies = self._capturar_cookies_sodre()
+        
+        if not self.cookies:
+            print("  ⚠️ Sem cookies, pulando Sodré")
             return []
         
         items = []
@@ -220,7 +256,14 @@ class SodreExtractor:
                     "referer": "https://www.sodresantoro.com.br/veiculos/lotes",
                 }
                 
-                r = session.post(self.API, json=payload, headers=headers, timeout=45)
+                # 🔥 FIX 5: Cookies EXPLÍCITOS no request
+                r = self.session.post(
+                    self.API, 
+                    json=payload, 
+                    headers=headers,
+                    cookies=self.cookies,  # ← CRÍTICO!
+                    timeout=45
+                )
                 
                 if r.status_code == 200:
                     data = r.json()
@@ -608,11 +651,8 @@ def main():
     args = parser.parse_args()
     
     print("="*60)
-    print(f"🚗 SCRAPER: {CATEGORIA.upper()} - VERSÃO DEFINITIVA")
+    print(f"🚗 SCRAPER: {CATEGORIA.upper()} - VERSÃO FINAL")
     print("="*60)
-    
-    # 🍪 Cria session global com cookies
-    CookieManager.criar_session_global()
     
     extractors = {
         'sodre': SodreExtractor,
@@ -620,8 +660,13 @@ def main():
         'superbid': SuperbidExtractor
     }
     
-    todos = []
     fontes = [args.fonte] if args.fonte != 'all' else list(extractors.keys())
+    
+    # 🍪 Cria session global APENAS se necessário (Megaleilões ou Superbid)
+    if 'megaleiloes' in fontes or 'superbid' in fontes:
+        CookieManager.criar_session_global()
+    
+    todos = []
     
     for fonte in fontes:
         try:
