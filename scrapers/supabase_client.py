@@ -64,8 +64,8 @@ class SupabaseClient:
         batch_size = 500
         total_batches = (len(prepared) + batch_size - 1) // batch_size
         
-        # URL com schema.tabela
-        url = f"{self.url}/rest/v1/auctions.{tabela}"
+        # URL correta para Supabase
+        url = f"{self.url}/rest/v1/{tabela}"
         
         for i in range(0, len(prepared), batch_size):
             batch = prepared[i:i+batch_size]

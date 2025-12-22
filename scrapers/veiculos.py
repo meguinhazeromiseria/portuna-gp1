@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""🚗 SCRAPER: VEÍCULOS - GRUPO 1"""
+"""🚗 SCRAPER: VEÍCULOS - GRUPO 1
+Baseado nos scrapers originais que funcionam
+"""
 
 import json
 import time
@@ -10,7 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
-
 
 CATEGORIA = "veiculos"
 TABELA_DB = "veiculos"
@@ -35,12 +36,9 @@ class Normalizador:
             return "Veículo sem título"
         
         import re
-        
-        # Remove lixo
         limpo = re.sub(r'(lote\s*\d+|placa\s*[a-z]{3}\d[a-z0-9]\d{2}|km\s*\d+)', '', titulo, flags=re.IGNORECASE)
         limpo = re.sub(r'\s+', ' ', limpo).strip()
         
-        # Usa metadata se tiver
         if metadata:
             marca = metadata.get('marca') or metadata.get('brand', '')
             modelo = metadata.get('modelo') or metadata.get('model', '')
@@ -52,7 +50,6 @@ class Normalizador:
                     result += f" {ano}"
                 return result[:100]
         
-        # Tenta extrair automaticamente
         words = limpo.upper().split()
         marca = None
         modelo = []
@@ -71,91 +68,194 @@ class Normalizador:
 
 
 class SodreExtractor:
-    """Sodré: veiculos + judiciais-veiculos"""
+    """🔵 SODRÉ - Lógica do scraper original que funciona"""
     
     API = "https://www.sodresantoro.com.br/api/search-lots"
     INDICES = ["veiculos", "judiciais-veiculos"]
+    ACTIVE_STATUS = [1, 2, 3]  # Apenas ativos
     
     def extrair(self):
         print("\n🔵 SODRÉ")
         
-        # Cookies
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto("https://www.sodresantoro.com.br", timeout=30000)
-            time.sleep(2)
-            cookies = {c["name"]: c["value"] for c in page.context.cookies()}
-            browser.close()
+        # 🔥 COOKIES - Anti-detection completo
+        cookies = self._get_cookies()
         
         items = []
-        pag = 0
+        page_num = 0
+        max_retries = 3
         
-        while pag < 50:
+        while page_num < 50:  # Max 50 páginas
             payload = {
                 "indices": self.INDICES,
-                "query": {"bool": {"filter": [{"terms": {"lot_status_id": [1, 2, 3]}}]}},
-                "from": pag * 100,
-                "size": 100
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"terms": {"lot_status_id": self.ACTIVE_STATUS}}
+                        ]
+                    }
+                },
+                "from": page_num * 100,
+                "size": 100,
+                "sort": [
+                    {"lot_status_id_order": {"order": "asc"}},
+                    {"auction_date_init": {"order": "asc"}}
+                ]
             }
             
-            r = requests.post(self.API, json=payload, cookies=cookies, timeout=60)
-            if r.status_code != 200:
-                break
+            for attempt in range(max_retries):
+                try:
+                    r = requests.post(
+                        self.API,
+                        json=payload,
+                        cookies=cookies,
+                        headers={
+                            "accept": "application/json",
+                            "content-type": "application/json",
+                            "origin": "https://www.sodresantoro.com.br",
+                            "referer": "https://www.sodresantoro.com.br/",
+                            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                        },
+                        timeout=45
+                    )
+                    
+                    if r.status_code == 200:
+                        data = r.json()
+                        lotes = data.get("results", [])
+                        total = data.get("total", 0)
+                        
+                        if not lotes:
+                            print(f"  ✅ Fim na página {page_num+1}")
+                            return self._normalizar(items)
+                        
+                        items.extend(lotes)
+                        print(f"  Pág {page_num+1}: +{len(lotes)} | Total: {len(items)}/{total}")
+                        
+                        if len(items) >= total:
+                            return self._normalizar(items)
+                        
+                        break  # Sucesso, sai do retry
+                        
+                    elif r.status_code == 429:
+                        wait = random.randint(15, 30) * (attempt + 1)
+                        print(f"  ⚠️ Rate limit, aguardando {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        print(f"  ⚠️ Status {r.status_code}")
+                        break
+                        
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait = random.randint(10, 20)
+                        print(f"  ⚠️ Erro (tentativa {attempt+1}): aguardando {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        print(f"  ❌ Falha após {max_retries} tentativas")
+                        return self._normalizar(items)
             
-            lotes = r.json().get("results", [])
-            if not lotes:
-                break
-            
-            items.extend(lotes)
-            print(f"  Pág {pag+1}: +{len(lotes)} | Total: {len(items)}")
-            
-            pag += 1
-            time.sleep(random.uniform(2, 4))
+            page_num += 1
+            time.sleep(random.uniform(1.5, 3))
         
         return self._normalizar(items)
+    
+    def _get_cookies(self):
+        """Captura cookies com anti-detection"""
+        print("  🍪 Capturando cookies...")
+        
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--no-sandbox'
+                    ]
+                )
+                
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='pt-BR',
+                    timezone_id='America/Sao_Paulo'
+                )
+                
+                page = context.new_page()
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.chrome = {runtime: {}};
+                """)
+                
+                page.goto("https://www.sodresantoro.com.br", wait_until="networkidle", timeout=60000)
+                time.sleep(5)
+                
+                cookies_list = context.cookies()
+                if not cookies_list:
+                    page.goto("https://www.sodresantoro.com.br/veiculos/lotes", wait_until="networkidle")
+                    time.sleep(3)
+                    cookies_list = context.cookies()
+                
+                browser.close()
+                
+                cookie_dict = {c["name"]: c["value"] for c in cookies_list}
+                print(f"  ✅ {len(cookie_dict)} cookies")
+                return cookie_dict
+                
+        except Exception as e:
+            print(f"  ⚠️ Erro cookies: {e}")
+            return {}
     
     def _normalizar(self, items):
         resultado = []
         
         for item in items:
+            if not item or item.get("lot_status_id") not in self.ACTIVE_STATUS:
+                continue
+            
             lot_id = item.get("lot_id") or item.get("id")
             if not lot_id:
                 continue
             
             auction_id = item.get("auction_id")
             
-            metadata = {
-                "marca": item.get("lot_brand"),
-                "modelo": item.get("lot_model"),
-                "ano_fabricacao": item.get("lot_year_manufacture"),
-                "ano_modelo": item.get("lot_year_model"),
-                "placa": item.get("lot_plate"),
-                "km": item.get("lot_km", 0),
-                "cor": item.get("lot_color"),
-            }
+            # Valor - API retorna em centavos!
+            value_raw = item.get("bid_actual") or item.get("bid_initial")
+            value = None
+            if value_raw:
+                try:
+                    value = float(value_raw) / 100  # Divide por 100!
+                except:
+                    pass
             
-            titulo = item.get("lot_title") or f"{metadata.get('marca', '')} {metadata.get('modelo', '')}".strip()
-            
-            value = item.get("bid_actual") or item.get("bid_initial")
-            if value:
-                value = float(value) / 100
-            
-            location = item.get("lot_location", "")
+            # Localização
+            location = item.get("lot_location", "") or ""
             city, state = None, None
             if "/" in location:
                 parts = location.split("/")
                 city = parts[0].strip()
                 state = parts[1].strip() if len(parts) > 1 else None
             
+            if state and len(state) != 2:
+                state = None
+            
+            # Metadata
+            metadata = {
+                "marca": item.get("lot_brand"),
+                "modelo": item.get("lot_model"),
+                "ano_modelo": item.get("lot_year_model"),
+                "placa": item.get("lot_plate"),
+                "km": item.get("lot_km", 0),
+                "cor": item.get("lot_color"),
+            }
+            
+            titulo = item.get("lot_title") or f"{metadata.get('marca', '')} {metadata.get('modelo', '')}".strip() or "Sem título"
+            
             resultado.append({
                 "source": "sodre",
-                "external_id": f"sodre_veiculos_{lot_id}",
+                "external_id": f"sodre_{lot_id}",
                 "title": titulo,
                 "normalized_title": Normalizador.normalizar(titulo, metadata),
                 "value": value,
                 "city": city,
-                "state": state if state and len(state) == 2 else None,
+                "state": state,
                 "link": f"https://leilao.sodresantoro.com.br/leilao/{auction_id}/lote/{lot_id}/",
                 "metadata": metadata
             })
@@ -164,46 +264,80 @@ class SodreExtractor:
 
 
 class MegaleiloesExtractor:
-    """Megaleilões: /veiculos"""
+    """🟢 MEGALEILÕES"""
     
     BASE = "https://www.megaleiloes.com.br"
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0",
+    ]
     
     def extrair(self):
         print("\n🟢 MEGALEILÕES")
         
         items = []
         ids = set()
+        user_agent = random.choice(self.USER_AGENTS)
         
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-blink-features=AutomationControlled']
+            )
+            
+            context = browser.new_context(
+                user_agent=user_agent,
+                viewport={'width': 1920, 'height': 1080},
+                locale='pt-BR'
+            )
+            
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = {runtime: {}};
+            """)
+            
+            page = context.new_page()
             
             for pag in range(1, 31):
                 url = f"{self.BASE}/veiculos" + (f"?pagina={pag}" if pag > 1 else "")
                 
-                page.goto(url, timeout=60000)
-                time.sleep(random.uniform(3, 5))
-                
-                soup = BeautifulSoup(page.content(), 'html.parser')
-                cards = soup.select('div.card, a[href*="/leilao/"]')
-                
-                if not cards:
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(random.uniform(3, 6))
+                    
+                    # Scroll
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    time.sleep(2)
+                    page.evaluate("window.scrollTo(0, 0)")
+                    time.sleep(1)
+                    
+                    soup = BeautifulSoup(page.content(), 'html.parser')
+                    
+                    # Múltiplos seletores
+                    cards = soup.select('div.card, a[href*="/leilao/"], div[class*="card"]')
+                    
+                    if not cards:
+                        print(f"  ⚪ Pág {pag}: sem cards")
+                        break
+                    
+                    novos = 0
+                    for card in cards:
+                        item = self._extrair_card(card)
+                        if item and item['external_id'] not in ids:
+                            items.append(item)
+                            ids.add(item['external_id'])
+                            novos += 1
+                    
+                    print(f"  Pág {pag}: +{novos} | Total: {len(items)}")
+                    
+                    if novos == 0:
+                        break
+                    
+                    time.sleep(random.uniform(3, 6))
+                    
+                except Exception as e:
+                    print(f"  ⚠️ Erro pág {pag}: {e}")
                     break
-                
-                novos = 0
-                for card in cards:
-                    item = self._extrair_card(card)
-                    if item and item['external_id'] not in ids:
-                        items.append(item)
-                        ids.add(item['external_id'])
-                        novos += 1
-                
-                print(f"  Pág {pag}: +{novos} | Total: {len(items)}")
-                
-                if novos == 0:
-                    break
-                
-                time.sleep(random.uniform(3, 5))
             
             browser.close()
         
@@ -212,17 +346,39 @@ class MegaleiloesExtractor:
     def _extrair_card(self, card):
         import re
         
-        link = card.get('href') if card.name == 'a' else (card.select_one('a[href]') or {}).get('href', '')
-        if not link or link == '#':
+        # Link
+        link = card.get('href') if card.name == 'a' else None
+        if not link:
+            link_elem = card.select_one('a[href]')
+            link = link_elem.get('href') if link_elem else None
+        
+        if not link or link == '#' or 'javascript' in link:
             return None
         
         if not link.startswith('http'):
             link = self.BASE + link
         
+        # ID único do link completo
+        url_parts = link.rstrip('/').split('/')
+        part_id = None
+        for part in reversed(url_parts):
+            if part and not part.startswith('?'):
+                part_clean = part.split('?')[0]
+                if part_clean:
+                    part_id = part_clean
+                    break
+        
+        if not part_id:
+            part_id = str(abs(hash(link)) % 10000000)
+        
+        external_id = f"megaleiloes_{part_id}"
+        
+        # Texto
         texto = card.get_text(separator=' ', strip=True)
         
+        # Título
         titulo = "Sem título"
-        for sel in ['h2', 'h3', 'h4', 'strong']:
+        for sel in ['h2', 'h3', 'h4', 'strong', '.titulo']:
             elem = card.select_one(sel)
             if elem:
                 t = elem.get_text(strip=True)
@@ -230,6 +386,7 @@ class MegaleiloesExtractor:
                     titulo = t
                     break
         
+        # Preço
         value = None
         match = re.search(r'R\$\s*([\d.]+,\d{2})', texto)
         if match:
@@ -238,14 +395,17 @@ class MegaleiloesExtractor:
             except:
                 pass
         
+        # Estado
         state = None
+        valid_states = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG',
+                       'PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO']
         sm = re.search(r'\b([A-Z]{2})\b', texto)
-        if sm:
+        if sm and sm.group(1) in valid_states:
             state = sm.group(1)
         
         return {
             "source": "megaleiloes",
-            "external_id": f"megaleiloes_veiculos_{abs(hash(link)) % 10000000}",
+            "external_id": external_id,
             "title": titulo,
             "normalized_title": Normalizador.normalizar(titulo),
             "value": value,
@@ -256,7 +416,7 @@ class MegaleiloesExtractor:
 
 
 class SuperbidExtractor:
-    """Superbid: carros-motos + caminhoes-onibus"""
+    """🔴 SUPERBID - Lógica original que funciona"""
     
     API = "https://offer-query.superbid.net/seo/offers/"
     BASE = "https://exchange.superbid.net"
@@ -268,70 +428,116 @@ class SuperbidExtractor:
         items = []
         
         for cat in self.CATS:
-            pag = 1
+            print(f"  📦 {cat}")
+            page = 1
             
-            while pag <= 30:
+            while page <= 30:
                 params = {
                     "urlSeo": f"{self.BASE}/categorias/{cat}",
                     "locale": "pt_BR",
-                    "pageNumber": pag,
+                    "pageNumber": page,
                     "pageSize": 100,
-                    "searchType": "openedAll"
+                    "searchType": "openedAll",
+                    "timeZoneId": "America/Sao_Paulo"
                 }
                 
-                r = requests.get(self.API, params=params, timeout=60)
-                if r.status_code != 200:
-                    break
-                
-                offers = r.json().get("offers", [])
-                if not offers:
-                    break
-                
-                for offer in offers:
-                    # Filtra ofertas de teste
-                    seller_name = (offer.get("seller", {}).get("name") or "").lower()
-                    if "demo" in seller_name:
-                        continue
+                try:
+                    r = requests.get(
+                        self.API,
+                        params=params,
+                        headers={
+                            "accept": "*/*",
+                            "origin": self.BASE,
+                            "referer": f"{self.BASE}/",
+                            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                        },
+                        timeout=45
+                    )
                     
-                    if not offer.get("store", {}).get("name"):
-                        continue
+                    if r.status_code == 404:
+                        print(f"    ✅ Fim na pág {page}")
+                        break
                     
-                    item = self._normalizar(offer)
-                    if item:
-                        items.append(item)
-                
-                print(f"  {cat} pág {pag}: {len(offers)} | Total: {len(items)}")
-                
-                pag += 1
-                time.sleep(random.uniform(2, 4))
+                    if r.status_code != 200:
+                        print(f"    ⚠️ Status {r.status_code}")
+                        break
+                    
+                    offers = r.json().get("offers", [])
+                    if not offers:
+                        print(f"    ✅ Fim na pág {page}")
+                        break
+                    
+                    # Filtra ofertas válidas
+                    valid = []
+                    for offer in offers:
+                        # Filtra demo/teste
+                        seller_name = (offer.get("seller", {}).get("name") or "").lower()
+                        if "demo" in seller_name:
+                            continue
+                        
+                        if not offer.get("store", {}).get("name"):
+                            continue
+                        
+                        # Filtra inativos
+                        end_date = offer.get("endDate")
+                        if end_date:
+                            try:
+                                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                                if end_dt <= datetime.now(end_dt.tzinfo):
+                                    continue
+                            except:
+                                pass
+                        
+                        valid.append(offer)
+                    
+                    items.extend(valid)
+                    print(f"    Pág {page}: +{len(valid)} | Total: {len(items)}")
+                    
+                    if len(offers) < 10:
+                        break
+                    
+                    page += 1
+                    time.sleep(random.uniform(2, 4))
+                    
+                except Exception as e:
+                    print(f"    ❌ Erro: {e}")
+                    break
         
-        return items
+        return self._normalizar(items)
     
-    def _normalizar(self, offer):
-        oid = offer.get("id")
-        if not oid:
-            return None
+    def _normalizar(self, offers):
+        resultado = []
         
-        titulo = offer.get("product", {}).get("shortDesc", "Sem título")
+        for offer in offers:
+            oid = offer.get("id")
+            if not oid:
+                continue
+            
+            titulo = offer.get("product", {}).get("shortDesc", "Sem título")
+            
+            city_text = offer.get("seller", {}).get("city", "")
+            city, state = None, None
+            if "/" in city_text:
+                parts = city_text.split("/")
+                city = parts[0].strip()
+                state = parts[1].strip() if len(parts) > 1 else None
+            
+            if state and len(state) != 2:
+                state = None
+            
+            resultado.append({
+                "source": "superbid",
+                "external_id": f"superbid_{oid}",
+                "title": titulo,
+                "normalized_title": Normalizador.normalizar(titulo),
+                "value": offer.get("offerDetail", {}).get("currentMinBid"),
+                "city": city,
+                "state": state,
+                "link": f"{self.BASE}/oferta/{oid}",
+                "metadata": {}
+            })
         
-        city_text = offer.get("seller", {}).get("city", "")
-        city, state = None, None
-        if "/" in city_text:
-            parts = city_text.split("/")
-            city = parts[0].strip()
-            state = parts[1].strip() if len(parts) > 1 else None
-        
-        return {
-            "source": "superbid",
-            "external_id": f"superbid_veiculos_{oid}",
-            "title": titulo,
-            "normalized_title": Normalizador.normalizar(titulo),
-            "value": offer.get("offerDetail", {}).get("currentMinBid"),
-            "city": city,
-            "state": state if state and len(state) == 2 else None,
-            "link": f"{self.BASE}/oferta/{oid}",
-            "metadata": {}
-        }
+        return resultado
 
 
 def main():
@@ -352,7 +558,6 @@ def main():
     }
     
     todos = []
-    
     fontes = [args.fonte] if args.fonte != 'all' else list(extractors.keys())
     
     for fonte in fontes:
@@ -360,9 +565,11 @@ def main():
             ext = extractors[fonte]()
             items = ext.extrair()
             todos.extend(items)
-            print(f"✅ {fonte}: {len(items)} itens")
+            print(f"✅ {fonte}: {len(items)} itens\n")
         except Exception as e:
-            print(f"❌ {fonte}: {e}")
+            print(f"❌ {fonte}: {e}\n")
+            import traceback
+            traceback.print_exc()
     
     # Remove duplicatas
     unicos = {i['external_id']: i for i in todos}
@@ -375,8 +582,8 @@ def main():
     with open(arquivo, "w", encoding="utf-8") as f:
         json.dump(todos, f, ensure_ascii=False, indent=2, default=str)
     
-    print(f"\n💾 Salvo: {arquivo}")
-    print(f"📊 Total: {len(todos)} itens")
+    print(f"💾 Salvo: {arquivo}")
+    print(f"📊 Total: {len(todos)} itens únicos")
     
     # Upload Supabase
     try:
@@ -387,6 +594,8 @@ def main():
         print(f"✅ Supabase: {result['inserted']} novos, {result['updated']} atualizados")
     except Exception as e:
         print(f"❌ Erro Supabase: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
