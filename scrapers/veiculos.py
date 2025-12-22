@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""🚗 SCRAPER: VEÍCULOS - ATUALIZADO PARA NOVA ESTRUTURA"""
+"""🚗 SCRAPER: VEÍCULOS - CORRIGIDO COM LÓGICA DO SUPERBID"""
 
 import json
 import time
@@ -318,11 +318,67 @@ class MegaleiloesExtractor:
 
 
 class SuperbidExtractor:
-    """🔴 SUPERBID"""
+    """🔴 SUPERBID - VERSÃO CORRIGIDA"""
     
     API = "https://offer-query.superbid.net/seo/offers/"
     BASE = "https://exchange.superbid.net"
     CATS = ["carros-motos", "caminhoes-onibus"]
+    
+    def __init__(self):
+        # 🔥 FIX 1: Session com headers completos
+        self.session = requests.Session()
+        self.headers = {
+            "accept": "*/*",
+            "accept-language": "pt-BR,pt;q=0.9",
+            "origin": self.BASE,
+            "referer": f"{self.BASE}/",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        self.filtered_stats = {
+            'demo_seller': 0,
+            'demo_auctioneer': 0,
+            'deploy_text': 0,
+            'no_store': 0
+        }
+    
+    def is_test_offer(self, offer: dict) -> tuple:
+        """
+        🔥 FIX 2: Verifica se a oferta é de teste/demo
+        Retorna: (is_test, reason)
+        """
+        seller = offer.get("seller", {})
+        auction = offer.get("auction", {})
+        product = offer.get("product", {})
+        store = offer.get("store", {})
+        
+        # 1. Verifica store_name NULL
+        store_name = store.get("name")
+        if not store_name:
+            return True, "no_store"
+        
+        # 2. Verifica "Vendedor Demo" - COM PROTEÇÃO CONTRA None
+        seller_name = seller.get("name") or ""
+        seller_name = seller_name.lower() if seller_name else ""
+        if "vendedor demo" in seller_name or "demo" in seller_name:
+            return True, "demo_seller"
+        
+        # 3. Verifica "Corretor Demo" ou "Leiloeiro Demo" - COM PROTEÇÃO CONTRA None
+        auctioneer = auction.get("auctioneer") or ""
+        auctioneer = auctioneer.lower() if auctioneer else ""
+        if "demo" in auctioneer or "corretor demo" in auctioneer or "leiloeiro demo" in auctioneer:
+            return True, "demo_auctioneer"
+        
+        # 4. Verifica "deploy" no título ou descrição - COM PROTEÇÃO CONTRA None
+        title = product.get("shortDesc") or ""
+        title = title.lower() if title else ""
+        
+        description = offer.get("offerDescription", {}).get("offerDescription") or ""
+        description = description.lower() if description else ""
+        
+        if "deploy" in title or "deploy" in description:
+            return True, "deploy_text"
+        
+        return False, ""
     
     def extrair(self):
         print("\n🔴 SUPERBID")
@@ -332,44 +388,120 @@ class SuperbidExtractor:
         for cat in self.CATS:
             print(f"  📦 {cat}")
             page = 1
-            errors = 0
+            consecutive_errors = 0
+            local_filtered = {'demo_seller': 0, 'demo_auctioneer': 0, 'deploy_text': 0, 'no_store': 0}
             
-            while page <= 10 and errors < 3:
+            while page <= 20 and consecutive_errors < 5:  # 🔥 FIX 3: Aumenta limite de páginas e erros
                 try:
+                    # 🔥 FIX 4: Parâmetros completos da API
                     params = {
                         "urlSeo": f"{self.BASE}/categorias/{cat}",
                         "locale": "pt_BR",
+                        "orderBy": "offerDetail.percentDiffReservedPriceOverFipePrice:asc",
                         "pageNumber": page,
                         "pageSize": 100,
+                        "portalId": "[2,15]",
+                        "preOrderBy": "orderByFirstOpenedOffersAndSecondHasPhoto",
+                        "requestOrigin": "marketplace",
+                        "searchType": "openedAll",
+                        "timeZoneId": "America/Sao_Paulo",
                     }
                     
-                    r = requests.get(self.API, params=params, timeout=45)
+                    r = self.session.get(
+                        self.API, 
+                        params=params, 
+                        headers=self.headers,  # 🔥 FIX 5: Usa headers configurados
+                        timeout=45
+                    )
                     
+                    # 🔥 FIX 6: Tratamento específico de 404 (fim de páginas)
+                    if r.status_code == 404:
+                        print(f"    ✅ Fim: página {page} retornou 404")
+                        break
+                    
+                    # 🔥 FIX 7: Retry inteligente para 500
                     if r.status_code == 500:
-                        wait = 20 * (errors + 1)
-                        print(f"    ⚠️ 500 Error, aguardando {wait}s...")
+                        consecutive_errors += 1
+                        wait = 20 * consecutive_errors
+                        print(f"    ⚠️ 500 Error (tentativa {consecutive_errors}/5), aguardando {wait}s...")
                         time.sleep(wait)
-                        errors += 1
                         continue
                     
                     if r.status_code != 200:
+                        print(f"    ⚠️ Status {r.status_code}")
+                        consecutive_errors += 1
+                        if consecutive_errors >= 5:
+                            break
+                        time.sleep(10)
+                        continue
+                    
+                    try:
+                        offers = r.json().get("offers", [])
+                    except json.JSONDecodeError:
+                        print(f"    ⚠️ Erro JSON na página {page}")
+                        consecutive_errors += 1
+                        continue
+                    
+                    if not offers or len(offers) == 0:
+                        print(f"    ✅ Fim: página {page} vazia")
                         break
                     
-                    offers = r.json().get("offers", [])
-                    if not offers:
-                        break
+                    # 🔥 FIX 8: Filtra ofertas de teste/demo
+                    valid = []
+                    for offer in offers:
+                        is_test, reason = self.is_test_offer(offer)
+                        if is_test:
+                            local_filtered[reason] += 1
+                            self.filtered_stats[reason] += 1
+                            continue
+                        valid.append(offer)
                     
-                    valid = [o for o in offers if o.get("store", {}).get("name")]
                     items.extend(valid)
-                    print(f"    Pág {page}: +{len(valid)}")
+                    print(f"    Pág {page}: +{len(valid)} válidos | Total: {len(items)}")
+                    
+                    # 🔥 FIX 9: Detecta última página
+                    if len(offers) < 10:
+                        print(f"    ✅ Fim: Última página com {len(offers)} ofertas")
+                        break
                     
                     page += 1
-                    errors = 0
-                    time.sleep(3)
+                    consecutive_errors = 0  # Reset contador de erros
+                    time.sleep(random.uniform(2, 5))  # 🔥 FIX 10: Delay entre requests
                     
+                except requests.exceptions.Timeout:
+                    print(f"    ⚠️ Timeout na página {page}")
+                    consecutive_errors += 1
+                    time.sleep(10)
                 except Exception as e:
                     print(f"    ⚠️ Erro: {e}")
-                    errors += 1
+                    consecutive_errors += 1
+                    time.sleep(10)
+            
+            # Mostra estatísticas de filtros da categoria
+            total_filtered_cat = sum(local_filtered.values())
+            if total_filtered_cat > 0:
+                print(f"    🚫 Filtrados {total_filtered_cat} itens de teste/demo:")
+                if local_filtered['no_store'] > 0:
+                    print(f"       • Sem loja: {local_filtered['no_store']}")
+                if local_filtered['demo_seller'] > 0:
+                    print(f"       • Vendedor Demo: {local_filtered['demo_seller']}")
+                if local_filtered['demo_auctioneer'] > 0:
+                    print(f"       • Leiloeiro Demo: {local_filtered['demo_auctioneer']}")
+                if local_filtered['deploy_text'] > 0:
+                    print(f"       • Texto 'deploy': {local_filtered['deploy_text']}")
+            
+            # Delay entre categorias
+            if cat != self.CATS[-1]:
+                time.sleep(random.uniform(10, 20))
+        
+        # Mostra estatísticas globais de filtros
+        total_filtered = sum(self.filtered_stats.values())
+        if total_filtered > 0:
+            print(f"\n  🚫 TOTAL FILTRADO: {total_filtered} ofertas de teste/demo")
+            print(f"     • Sem loja (store_name NULL): {self.filtered_stats['no_store']}")
+            print(f"     • Vendedor Demo: {self.filtered_stats['demo_seller']}")
+            print(f"     • Leiloeiro Demo: {self.filtered_stats['demo_auctioneer']}")
+            print(f"     • Texto 'deploy': {self.filtered_stats['deploy_text']}")
         
         return self._normalizar(items)
     
@@ -437,14 +569,13 @@ def main():
     print(f"💾 Salvo: {arquivo}")
     print(f"📊 Total: {len(todos)} itens únicos")
     
-    # 🔥 MUDANÇA PRINCIPAL: Usar nova estrutura
+    # Upload para Supabase
     try:
         from supabase_client import SupabaseClient
         
-        # 👇 FORÇA USO DA TABELA UNIFICADA
-        client = SupabaseClient(use_unified_table=True)
+        client = SupabaseClient()
         
-        result = client.upsert(CATEGORIA, todos)
+        result = client.upsert_normalized(todos)
         print(f"✅ Supabase: {result['inserted']} novos, {result['updated']} atualizados")
     except Exception as e:
         print(f"❌ Erro Supabase: {e}")
