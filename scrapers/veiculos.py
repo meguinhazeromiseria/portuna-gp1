@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""🚗 SCRAPER: VEÍCULOS - CORRIGIDO COM LÓGICA DO SUPERBID"""
+"""🚗 SCRAPER: VEÍCULOS - VERSÃO DEFINITIVA COM COOKIES PERSISTENTES"""
 
 import json
 import time
@@ -14,6 +14,123 @@ from bs4 import BeautifulSoup
 CATEGORIA = "veiculos"
 OUTPUT_DIR = Path(f"{CATEGORIA}_data")
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+# 🍪 Cookies globais (capturados uma vez e reutilizados)
+GLOBAL_SESSION = None
+
+
+class CookieManager:
+    """🍪 Gerenciador de cookies compartilhados entre todas as fontes"""
+    
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
+    
+    @classmethod
+    def criar_session_global(cls):
+        """Cria session com cookies capturados do Playwright"""
+        global GLOBAL_SESSION
+        
+        if GLOBAL_SESSION is not None:
+            return GLOBAL_SESSION
+        
+        print("\n🍪 CAPTURANDO COOKIES COM PLAYWRIGHT...")
+        
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--no-sandbox',
+                        '--disable-web-security',
+                    ]
+                )
+                
+                user_agent = random.choice(cls.USER_AGENTS)
+                
+                context = browser.new_context(
+                    user_agent=user_agent,
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='pt-BR',
+                    timezone_id='America/Sao_Paulo',
+                    color_scheme='light',
+                )
+                
+                # Script anti-detecção
+                context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en']});
+                    window.chrome = {runtime: {}};
+                """)
+                
+                page = context.new_page()
+                
+                # Visita múltiplos sites para coletar cookies
+                sites = [
+                    "https://www.sodresantoro.com.br",
+                    "https://www.megaleiloes.com.br",
+                    "https://exchange.superbid.net",
+                ]
+                
+                all_cookies = {}
+                
+                for site in sites:
+                    try:
+                        print(f"  🌐 Visitando {site}...")
+                        page.goto(site, wait_until="domcontentloaded", timeout=30000)
+                        time.sleep(random.uniform(2, 4))
+                        
+                        cookies = context.cookies()
+                        for cookie in cookies:
+                            all_cookies[cookie['name']] = cookie['value']
+                    except Exception as e:
+                        print(f"  ⚠️ Erro em {site}: {e}")
+                
+                browser.close()
+                
+                print(f"  ✅ {len(all_cookies)} cookies capturados")
+                
+                # Cria session com os cookies
+                session = requests.Session()
+                session.cookies.update(all_cookies)
+                
+                # Headers padrão para todas as requisições
+                session.headers.update({
+                    "User-Agent": user_agent,
+                    "Accept": "*/*",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Cache-Control": "max-age=0",
+                })
+                
+                GLOBAL_SESSION = session
+                return session
+                
+        except Exception as e:
+            print(f"  ❌ Erro ao capturar cookies: {e}")
+            print("  ⚠️ Criando session sem cookies...")
+            
+            # Fallback: session básica
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": random.choice(cls.USER_AGENTS),
+                "Accept": "*/*",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+            })
+            
+            GLOBAL_SESSION = session
+            return session
 
 
 class Normalizador:
@@ -65,7 +182,7 @@ class Normalizador:
 
 
 class SodreExtractor:
-    """🔵 SODRÉ"""
+    """🔵 SODRÉ - USA COOKIES GLOBAIS"""
     
     API = "https://www.sodresantoro.com.br/api/search-lots"
     INDICES = ["veiculos", "judiciais-veiculos"]
@@ -74,58 +191,14 @@ class SodreExtractor:
     def extrair(self):
         print("\n🔵 SODRÉ")
         
-        items = []
+        session = GLOBAL_SESSION
+        if not session:
+            print("  ❌ Session global não inicializada")
+            return []
         
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        '--disable-blink-features=AutomationControlled',
-                        '--disable-dev-shm-usage',
-                        '--no-sandbox',
-                    ]
-                )
-                
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    viewport={'width': 1920, 'height': 1080},
-                    locale='pt-BR',
-                )
-                
-                context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    window.chrome = {runtime: {}};
-                """)
-                
-                page = context.new_page()
-                
-                print("  🍪 Obtendo cookies...")
-                page.goto("https://www.sodresantoro.com.br", wait_until="networkidle", timeout=60000)
-                time.sleep(3)
-                
-                cookies_list = context.cookies()
-                cookie_dict = {c["name"]: c["value"] for c in cookies_list}
-                
-                print(f"  ✅ {len(cookie_dict)} cookies")
-                
-                browser.close()
-                
-                if cookie_dict:
-                    items = self._fazer_requisicoes(cookie_dict)
-                
-        except Exception as e:
-            print(f"  ❌ Erro: {e}")
-        
-        return self._normalizar(items)
-    
-    def _fazer_requisicoes(self, cookies):
         items = []
         page_num = 0
         max_pages = 50
-        
-        session = requests.Session()
-        session.cookies.update(cookies)
         
         while page_num < max_pages:
             payload = {
@@ -162,6 +235,9 @@ class SodreExtractor:
                     
                     if len(items) >= total:
                         break
+                elif r.status_code == 403:
+                    print(f"  ⚠️ Status 403 - proteção anti-bot detectou")
+                    break
                 else:
                     print(f"  ⚠️ Status {r.status_code}")
                     break
@@ -173,7 +249,7 @@ class SodreExtractor:
             page_num += 1
             time.sleep(random.uniform(3, 6))
         
-        return items
+        return self._normalizar(items)
     
     def _normalizar(self, items):
         resultado = []
@@ -220,52 +296,60 @@ class SodreExtractor:
 
 
 class MegaleiloesExtractor:
-    """🟢 MEGALEILÕES"""
+    """🟢 MEGALEILÕES - USA COOKIES GLOBAIS"""
     
     BASE = "https://www.megaleiloes.com.br"
     
     def extrair(self):
         print("\n🟢 MEGALEILÕES")
         
+        session = GLOBAL_SESSION
+        if not session:
+            print("  ❌ Session global não inicializada")
+            return []
+        
         items = []
         ids = set()
         
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(locale='pt-BR')
-            page = context.new_page()
+        for pag in range(1, 10):
+            url = f"{self.BASE}/veiculos" + (f"?pagina={pag}" if pag > 1 else "")
             
-            for pag in range(1, 10):
-                url = f"{self.BASE}/veiculos" + (f"?pagina={pag}" if pag > 1 else "")
+            try:
+                headers = {
+                    "referer": self.BASE,
+                    "origin": self.BASE,
+                }
                 
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    time.sleep(3)
-                    
-                    soup = BeautifulSoup(page.content(), 'html.parser')
-                    cards = soup.select('div.card, a[href*="/leilao/"]')
-                    
-                    if not cards:
-                        break
-                    
-                    novos = 0
-                    for card in cards:
-                        item = self._extrair_card(card)
-                        if item and item['external_id'] not in ids:
-                            items.append(item)
-                            ids.add(item['external_id'])
-                            novos += 1
-                    
-                    print(f"  Pág {pag}: +{novos} | Total: {len(items)}")
-                    
-                    if novos == 0:
-                        break
-                    
-                except Exception as e:
-                    print(f"  ⚠️ Erro pág {pag}: {e}")
+                r = session.get(url, headers=headers, timeout=30)
+                
+                if r.status_code != 200:
+                    print(f"  ⚠️ Status {r.status_code}")
                     break
-            
-            browser.close()
+                
+                soup = BeautifulSoup(r.content, 'html.parser')
+                cards = soup.select('div.card, a[href*="/leilao/"]')
+                
+                if not cards:
+                    break
+                
+                novos = 0
+                for card in cards:
+                    item = self._extrair_card(card)
+                    if item and item['external_id'] not in ids:
+                        items.append(item)
+                        ids.add(item['external_id'])
+                        novos += 1
+                
+                print(f"  Pág {pag}: +{novos} | Total: {len(items)}")
+                
+                if novos == 0:
+                    break
+                
+                time.sleep(random.uniform(2, 4))
+                
+            except Exception as e:
+                print(f"  ⚠️ Erro pág {pag}: {e}")
+                break
         
         return items
     
@@ -318,22 +402,13 @@ class MegaleiloesExtractor:
 
 
 class SuperbidExtractor:
-    """🔴 SUPERBID - VERSÃO CORRIGIDA"""
+    """🔴 SUPERBID - USA COOKIES GLOBAIS"""
     
     API = "https://offer-query.superbid.net/seo/offers/"
     BASE = "https://exchange.superbid.net"
     CATS = ["carros-motos", "caminhoes-onibus"]
     
     def __init__(self):
-        # 🔥 FIX 1: Session com headers completos
-        self.session = requests.Session()
-        self.headers = {
-            "accept": "*/*",
-            "accept-language": "pt-BR,pt;q=0.9",
-            "origin": self.BASE,
-            "referer": f"{self.BASE}/",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        }
         self.filtered_stats = {
             'demo_seller': 0,
             'demo_auctioneer': 0,
@@ -342,33 +417,26 @@ class SuperbidExtractor:
         }
     
     def is_test_offer(self, offer: dict) -> tuple:
-        """
-        🔥 FIX 2: Verifica se a oferta é de teste/demo
-        Retorna: (is_test, reason)
-        """
+        """Verifica se a oferta é de teste/demo"""
         seller = offer.get("seller", {})
         auction = offer.get("auction", {})
         product = offer.get("product", {})
         store = offer.get("store", {})
         
-        # 1. Verifica store_name NULL
         store_name = store.get("name")
         if not store_name:
             return True, "no_store"
         
-        # 2. Verifica "Vendedor Demo" - COM PROTEÇÃO CONTRA None
         seller_name = seller.get("name") or ""
         seller_name = seller_name.lower() if seller_name else ""
         if "vendedor demo" in seller_name or "demo" in seller_name:
             return True, "demo_seller"
         
-        # 3. Verifica "Corretor Demo" ou "Leiloeiro Demo" - COM PROTEÇÃO CONTRA None
         auctioneer = auction.get("auctioneer") or ""
         auctioneer = auctioneer.lower() if auctioneer else ""
         if "demo" in auctioneer or "corretor demo" in auctioneer or "leiloeiro demo" in auctioneer:
             return True, "demo_auctioneer"
         
-        # 4. Verifica "deploy" no título ou descrição - COM PROTEÇÃO CONTRA None
         title = product.get("shortDesc") or ""
         title = title.lower() if title else ""
         
@@ -383,6 +451,11 @@ class SuperbidExtractor:
     def extrair(self):
         print("\n🔴 SUPERBID")
         
+        session = GLOBAL_SESSION
+        if not session:
+            print("  ❌ Session global não inicializada")
+            return []
+        
         items = []
         
         for cat in self.CATS:
@@ -391,9 +464,8 @@ class SuperbidExtractor:
             consecutive_errors = 0
             local_filtered = {'demo_seller': 0, 'demo_auctioneer': 0, 'deploy_text': 0, 'no_store': 0}
             
-            while page <= 20 and consecutive_errors < 5:  # 🔥 FIX 3: Aumenta limite de páginas e erros
+            while page <= 20 and consecutive_errors < 5:
                 try:
-                    # 🔥 FIX 4: Parâmetros completos da API
                     params = {
                         "urlSeo": f"{self.BASE}/categorias/{cat}",
                         "locale": "pt_BR",
@@ -407,19 +479,24 @@ class SuperbidExtractor:
                         "timeZoneId": "America/Sao_Paulo",
                     }
                     
-                    r = self.session.get(
+                    headers = {
+                        "accept": "*/*",
+                        "accept-language": "pt-BR,pt;q=0.9",
+                        "origin": self.BASE,
+                        "referer": f"{self.BASE}/",
+                    }
+                    
+                    r = session.get(
                         self.API, 
                         params=params, 
-                        headers=self.headers,  # 🔥 FIX 5: Usa headers configurados
+                        headers=headers,
                         timeout=45
                     )
                     
-                    # 🔥 FIX 6: Tratamento específico de 404 (fim de páginas)
                     if r.status_code == 404:
                         print(f"    ✅ Fim: página {page} retornou 404")
                         break
                     
-                    # 🔥 FIX 7: Retry inteligente para 500
                     if r.status_code == 500:
                         consecutive_errors += 1
                         wait = 20 * consecutive_errors
@@ -446,7 +523,6 @@ class SuperbidExtractor:
                         print(f"    ✅ Fim: página {page} vazia")
                         break
                     
-                    # 🔥 FIX 8: Filtra ofertas de teste/demo
                     valid = []
                     for offer in offers:
                         is_test, reason = self.is_test_offer(offer)
@@ -459,14 +535,13 @@ class SuperbidExtractor:
                     items.extend(valid)
                     print(f"    Pág {page}: +{len(valid)} válidos | Total: {len(items)}")
                     
-                    # 🔥 FIX 9: Detecta última página
                     if len(offers) < 10:
                         print(f"    ✅ Fim: Última página com {len(offers)} ofertas")
                         break
                     
                     page += 1
-                    consecutive_errors = 0  # Reset contador de erros
-                    time.sleep(random.uniform(2, 5))  # 🔥 FIX 10: Delay entre requests
+                    consecutive_errors = 0
+                    time.sleep(random.uniform(2, 5))
                     
                 except requests.exceptions.Timeout:
                     print(f"    ⚠️ Timeout na página {page}")
@@ -477,7 +552,6 @@ class SuperbidExtractor:
                     consecutive_errors += 1
                     time.sleep(10)
             
-            # Mostra estatísticas de filtros da categoria
             total_filtered_cat = sum(local_filtered.values())
             if total_filtered_cat > 0:
                 print(f"    🚫 Filtrados {total_filtered_cat} itens de teste/demo:")
@@ -490,11 +564,9 @@ class SuperbidExtractor:
                 if local_filtered['deploy_text'] > 0:
                     print(f"       • Texto 'deploy': {local_filtered['deploy_text']}")
             
-            # Delay entre categorias
             if cat != self.CATS[-1]:
                 time.sleep(random.uniform(10, 20))
         
-        # Mostra estatísticas globais de filtros
         total_filtered = sum(self.filtered_stats.values())
         if total_filtered > 0:
             print(f"\n  🚫 TOTAL FILTRADO: {total_filtered} ofertas de teste/demo")
@@ -536,8 +608,11 @@ def main():
     args = parser.parse_args()
     
     print("="*60)
-    print(f"🚗 SCRAPER: {CATEGORIA.upper()}")
+    print(f"🚗 SCRAPER: {CATEGORIA.upper()} - VERSÃO DEFINITIVA")
     print("="*60)
+    
+    # 🍪 Cria session global com cookies
+    CookieManager.criar_session_global()
     
     extractors = {
         'sodre': SodreExtractor,
@@ -569,16 +644,48 @@ def main():
     print(f"💾 Salvo: {arquivo}")
     print(f"📊 Total: {len(todos)} itens únicos")
     
-    # Upload para Supabase
+    # 🔥 CORREÇÃO DEFINITIVA DO SUPABASE
     try:
         from supabase_client import SupabaseClient
         
+        print("\n📤 Enviando para Supabase...")
         client = SupabaseClient()
         
-        result = client.upsert_normalized(todos)
-        print(f"✅ Supabase: {result['inserted']} novos, {result['updated']} atualizados")
+        # Verifica qual método está disponível
+        if hasattr(client, 'upsert_normalized'):
+            # Versão otimizada (nova)
+            print("  ℹ️ Usando método: upsert_normalized()")
+            result = client.upsert_normalized(todos)
+            print(f"  ✅ {result['inserted']} novos, {result['updated']} atualizados, {result['errors']} erros")
+            
+        elif hasattr(client, 'upsert'):
+            # Versão com tabelas separadas (antiga)
+            print("  ℹ️ Usando método: upsert('veiculos', items)")
+            result = client.upsert('veiculos', todos)
+            print(f"  ✅ {result['inserted']} novos, {result['updated']} atualizados, {result['errors']} erros")
+            
+        elif hasattr(client, 'insert_normalized'):
+            # Fallback para método antigo
+            print("  ℹ️ Usando método: insert_normalized()")
+            inserted = client.insert_normalized(todos)
+            print(f"  ✅ {inserted} itens processados")
+            
+        else:
+            print("  ⚠️ Nenhum método de upsert encontrado no SupabaseClient")
+            print("  📋 Métodos disponíveis:", [m for m in dir(client) if not m.startswith('_')])
+            
+    except ImportError:
+        print("\n⚠️ supabase_client.py não encontrado")
+        print("  ℹ️ Os dados foram salvos localmente em:", arquivo)
+        
     except Exception as e:
-        print(f"❌ Erro Supabase: {e}")
+        print(f"\n❌ Erro Supabase: {e}")
+        print("  ℹ️ Os dados foram salvos localmente em:", arquivo)
+        
+        # Debug: mostra informações do erro
+        import traceback
+        print("\n🔍 Detalhes do erro:")
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
