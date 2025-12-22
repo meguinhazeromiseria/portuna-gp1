@@ -1,0 +1,246 @@
+name: 🤖 Scrapers - Grupo 1
+
+on:
+  # Execução manual com escolha de categoria e fonte
+  workflow_dispatch:
+    inputs:
+      categoria:
+        description: 'Categoria'
+        required: true
+        type: choice
+        options:
+          - veiculos
+          - tecnologia
+          - bens_consumo
+          - eletrodomesticos
+          - todas
+      fonte:
+        description: 'Fonte'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - sodre
+          - megaleiloes
+          - superbid
+  
+  # Cron automático
+  schedule:
+    # Veículos: 4x/dia (0h, 6h, 12h, 18h UTC)
+    - cron: '0 0,6,12,18 * * *'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Dependencies
+        run: |
+          pip install requests playwright beautifulsoup4
+          playwright install chromium
+          playwright install-deps
+      
+      - name: Test Connection
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          cd scrapers
+          python supabase_client.py
+      
+      # ============================================================
+      # WORKFLOW DISPATCH (manual)
+      # ============================================================
+      - name: Run Selected Category
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.categoria != 'todas'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          cd scrapers
+          CATEGORIA="${{ github.event.inputs.categoria }}"
+          FONTE="${{ github.event.inputs.fonte }}"
+          
+          echo "======================================"
+          echo "🎯 EXECUTANDO: $CATEGORIA"
+          echo "======================================"
+          echo "📅 Início: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "🇧🇷 Horário Brasil: $(TZ='America/Sao_Paulo' date '+%Y-%m-%d %H:%M:%S BRT')"
+          echo "📦 Fonte: $FONTE"
+          echo "======================================"
+          echo ""
+          
+          START=$(date +%s)
+          
+          python ${CATEGORIA}.py --fonte $FONTE
+          
+          EXIT_CODE=$?
+          END=$(date +%s)
+          DURATION=$(( (END - START) / 60 ))
+          
+          echo ""
+          echo "======================================"
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ $CATEGORIA CONCLUÍDO em ${DURATION} minutos"
+          else
+            echo "❌ $CATEGORIA FALHOU (código $EXIT_CODE) após ${DURATION} minutos"
+          fi
+          echo "🕐 Término: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "======================================"
+          
+          exit $EXIT_CODE
+      
+      - name: Run All Categories
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.categoria == 'todas'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          cd scrapers
+          FONTE="${{ github.event.inputs.fonte }}"
+          
+          echo "======================================"
+          echo "🚀 EXECUTANDO TODAS AS CATEGORIAS"
+          echo "======================================"
+          echo "📅 Início: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "🇧🇷 Horário Brasil: $(TZ='America/Sao_Paulo' date '+%Y-%m-%d %H:%M:%S BRT')"
+          echo "📦 Fonte: $FONTE"
+          echo "======================================"
+          echo ""
+          
+          START=$(date +%s)
+          FAILED=0
+          
+          for CAT in veiculos tecnologia bens_consumo eletrodomesticos; do
+            echo ""
+            echo "=================================================="
+            echo "🎯 EXECUTANDO: $CAT"
+            echo "=================================================="
+            
+            if python ${CAT}.py --fonte $FONTE; then
+              echo "✅ $CAT concluído"
+            else
+              echo "❌ $CAT falhou"
+              FAILED=$((FAILED + 1))
+            fi
+            
+            echo ""
+          done
+          
+          END=$(date +%s)
+          DURATION=$(( (END - START) / 60 ))
+          
+          echo "======================================"
+          echo "📊 RESUMO FINAL"
+          echo "======================================"
+          echo "⏱️  Duração total: ${DURATION} minutos"
+          echo "❌ Falhas: $FAILED/4"
+          echo "🕐 Término: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "======================================"
+          
+          if [ $FAILED -gt 0 ]; then
+            exit 1
+          fi
+      
+      # ============================================================
+      # CRON (automático)
+      # ============================================================
+      - name: Run Cron (Veículos)
+        if: github.event_name == 'schedule'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          cd scrapers
+          
+          echo "======================================"
+          echo "⏰ CRON: VEÍCULOS"
+          echo "======================================"
+          echo "📅 Início: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "🇧🇷 Horário Brasil: $(TZ='America/Sao_Paulo' date '+%Y-%m-%d %H:%M:%S BRT')"
+          echo "📦 Fonte: all"
+          echo "======================================"
+          echo ""
+          
+          START=$(date +%s)
+          
+          python veiculos.py --fonte all
+          
+          EXIT_CODE=$?
+          END=$(date +%s)
+          DURATION=$(( (END - START) / 60 ))
+          
+          echo ""
+          echo "======================================"
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ VEÍCULOS CONCLUÍDO em ${DURATION} minutos"
+          else
+            echo "❌ VEÍCULOS FALHOU (código $EXIT_CODE) após ${DURATION} minutos"
+          fi
+          echo "🕐 Término: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "======================================"
+          
+          exit $EXIT_CODE
+      
+      # ============================================================
+      # ARTIFACTS
+      # ============================================================
+      - name: Upload Data on Success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dados-${{ github.run_number }}
+          path: scrapers/*_data/*.json
+          retention-days: 3
+      
+      - name: Upload Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-erro-${{ github.run_number }}
+          path: |
+            scrapers/*_data/*.json
+            scrapers/*.log
+          retention-days: 7
+      
+      # ============================================================
+      # SUMMARY
+      # ============================================================
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🤖 Scrapers - Grupo 1" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "**Modo:** Manual" >> $GITHUB_STEP_SUMMARY
+            echo "**Categoria:** ${{ github.event.inputs.categoria }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Fonte:** ${{ github.event.inputs.fonte }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Modo:** Cron (automático)" >> $GITHUB_STEP_SUMMARY
+            echo "**Categoria:** veiculos" >> $GITHUB_STEP_SUMMARY
+            echo "**Fonte:** all" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Horário UTC:** $(date -u '+%Y-%m-%d %H:%M')" >> $GITHUB_STEP_SUMMARY
+          echo "**Horário Brasil:** $(TZ='America/Sao_Paulo' date '+%Y-%m-%d %H:%M')" >> $GITHUB_STEP_SUMMARY
+          echo "**Run ID:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ Scraping concluído com sucesso!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Falhou – veja os logs para detalhes." >> $GITHUB_STEP_SUMMARY
+          fi
