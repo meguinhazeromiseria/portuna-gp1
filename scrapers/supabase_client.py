@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SUPABASE CLIENT - GRUPO 1"""
+"""SUPABASE CLIENT - GRUPO 1 - CORRIGIDO"""
 
 import os
 import time
@@ -9,7 +9,7 @@ from datetime import datetime
 
 
 class SupabaseClient:
-    """Cliente para Supabase - Compatível com schema auctions.*"""
+    """Cliente para Supabase - Schema auctions.*"""
     
     def __init__(self):
         self.url = os.getenv('SUPABASE_URL')
@@ -18,7 +18,6 @@ class SupabaseClient:
         if not self.url or not self.key:
             raise ValueError("❌ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY")
         
-        # Remove trailing slash se existir
         self.url = self.url.rstrip('/')
         
         self.headers = {
@@ -33,7 +32,7 @@ class SupabaseClient:
     
     def upsert(self, tabela: str, items: list) -> dict:
         """
-        Faz upsert em batch na tabela especificada
+        Faz upsert em batch na tabela especificada (schema auctions)
         
         Args:
             tabela: Nome da tabela (veiculos, tecnologia, etc)
@@ -45,7 +44,6 @@ class SupabaseClient:
         if not items:
             return {'inserted': 0, 'updated': 0, 'errors': 0}
         
-        # Prepara items
         prepared = []
         for item in items:
             try:
@@ -59,13 +57,12 @@ class SupabaseClient:
             print("  ⚠️ Nenhum item válido para inserir")
             return {'inserted': 0, 'updated': 0, 'errors': 0}
         
-        # Envia em batches
         stats = {'inserted': 0, 'updated': 0, 'errors': 0}
         batch_size = 500
         total_batches = (len(prepared) + batch_size - 1) // batch_size
         
-        # URL correta para Supabase
-        url = f"{self.url}/rest/v1/{tabela}"
+        # 🔥 FIX: Adiciona schema 'auctions' na URL
+        url = f"{self.url}/rest/v1/auctions.{tabela}"
         
         for i in range(0, len(prepared), batch_size):
             batch = prepared[i:i+batch_size]
@@ -83,7 +80,6 @@ class SupabaseClient:
                     print(f"  ✅ Batch {batch_num}/{total_batches}: {len(batch)} itens")
                 
                 elif r.status_code == 409:
-                    # Conflito = itens já existem (duplicatas)
                     stats['updated'] += len(batch)
                     print(f"  🔄 Batch {batch_num}/{total_batches}: {len(batch)} atualizados")
                 
@@ -100,45 +96,14 @@ class SupabaseClient:
                 print(f"  ❌ Batch {batch_num}: {e}")
                 stats['errors'] += len(batch)
             
-            # Delay entre batches para não sobrecarregar
             if batch_num < total_batches:
                 time.sleep(0.5)
         
         return stats
     
     def _prepare(self, item: dict) -> dict:
-        """
-        Prepara item para o schema do Supabase
+        """Prepara item para o schema do Supabase"""
         
-        Schema esperado:
-        - id: UUID (gerado automaticamente)
-        - source: text NOT NULL
-        - external_id: text NOT NULL
-        - title: text NOT NULL
-        - normalized_title: text
-        - description_preview: text
-        - description: text
-        - value: numeric
-        - value_text: text
-        - city: text
-        - state: text (2 chars)
-        - address: text
-        - auction_date: timestamptz
-        - days_remaining: integer
-        - auction_type: text
-        - auction_name: text
-        - store_name: text
-        - lot_number: text
-        - total_visits: integer
-        - total_bids: integer
-        - total_bidders: integer
-        - link: text
-        - metadata: jsonb
-        - is_active: boolean
-        - last_scraped_at: timestamptz
-        """
-        
-        # Valida obrigatórios
         source = item.get('source')
         external_id = item.get('external_id')
         title = item.get('title')
@@ -146,30 +111,25 @@ class SupabaseClient:
         if not source or not external_id:
             return None
         
-        # Garante título
         if not title or not title.strip():
             title = 'Sem título'
         
-        # Parse de data
         auction_date = item.get('auction_date')
         if auction_date:
             if isinstance(auction_date, str):
                 try:
-                    # Remove Z e adiciona timezone
                     auction_date = auction_date.replace('Z', '+00:00')
                     dt = datetime.fromisoformat(auction_date)
                     auction_date = dt.isoformat()
                 except:
                     auction_date = None
         
-        # Valida estado (deve ser 2 chars uppercase ou None)
         state = item.get('state')
         if state:
             state = str(state).strip().upper()
             if len(state) != 2:
                 state = None
         
-        # Valida valor numérico
         value = item.get('value')
         if value is not None:
             try:
@@ -179,7 +139,6 @@ class SupabaseClient:
             except:
                 value = None
         
-        # Prepara metadata (garante que é dict)
         metadata = item.get('metadata', {})
         if not isinstance(metadata, dict):
             metadata = {}
@@ -214,7 +173,6 @@ class SupabaseClient:
     def test(self) -> bool:
         """Testa conexão com Supabase"""
         try:
-            # Testa endpoint REST API
             url = f"{self.url}/rest/v1/"
             r = self.session.get(url, timeout=10)
             
@@ -240,7 +198,6 @@ class SupabaseClient:
         try:
             url = f"{self.url}/rest/v1/auctions.{tabela}"
             
-            # Count total
             r = self.session.get(
                 url,
                 params={'select': 'count'},
@@ -260,13 +217,11 @@ class SupabaseClient:
         return {'total': 0, 'table': tabela}
     
     def __del__(self):
-        """Fecha sessão ao destruir objeto"""
         if hasattr(self, 'session'):
             self.session.close()
 
 
 if __name__ == "__main__":
-    # Teste básico
     print("="*60)
     print("🧪 TESTE DO SUPABASE CLIENT")
     print("="*60)

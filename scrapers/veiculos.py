@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""🚗 SCRAPER: VEÍCULOS - GRUPO 1
-Baseado nos scrapers originais que funcionam
-"""
+"""🚗 SCRAPER: VEÍCULOS - GRUPO 1 - ANTI-BOT MELHORADO"""
 
 import json
 import time
@@ -68,23 +66,132 @@ class Normalizador:
 
 
 class SodreExtractor:
-    """🔵 SODRÉ - Lógica do scraper original que funciona"""
+    """🔵 SODRÉ - Anti-bot ultra melhorado"""
     
     API = "https://www.sodresantoro.com.br/api/search-lots"
     INDICES = ["veiculos", "judiciais-veiculos"]
-    ACTIVE_STATUS = [1, 2, 3]  # Apenas ativos
+    ACTIVE_STATUS = [1, 2, 3]
     
     def extrair(self):
-        print("\n🔵 SODRÉ")
+        print("\n🔵 SODRÉ (Anti-bot melhorado)")
         
-        # 🔥 COOKIES - Anti-detection completo
-        cookies = self._get_cookies()
+        items = []
         
+        try:
+            with sync_playwright() as p:
+                # 🔥 Browser com stealth mode completo
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-web-security',
+                        '--disable-features=IsolateOrigins,site-per-process'
+                    ]
+                )
+                
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='pt-BR',
+                    timezone_id='America/Sao_Paulo',
+                    java_script_enabled=True,
+                    accept_downloads=False
+                )
+                
+                # 🔥 Scripts anti-detecção avançados
+                context.add_init_script("""
+                    // Remove webdriver
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    // Adiciona chrome object
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+                    
+                    // Mascara navigator.plugins
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    
+                    // Mascara navigator.languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['pt-BR', 'pt', 'en-US', 'en']
+                    });
+                    
+                    // Permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                        Promise.resolve({state: Notification.permission}) :
+                        originalQuery(parameters)
+                    );
+                """)
+                
+                page = context.new_page()
+                
+                print("  🍪 Navegando para obter cookies...")
+                
+                # Navega como usuário real
+                page.goto("https://www.sodresantoro.com.br", wait_until="networkidle", timeout=60000)
+                time.sleep(3)
+                
+                # Simula comportamento humano
+                page.mouse.move(100, 100)
+                page.mouse.move(500, 300)
+                time.sleep(1)
+                
+                # Vai para página de veículos
+                page.goto("https://www.sodresantoro.com.br/veiculos/lotes", wait_until="networkidle", timeout=60000)
+                time.sleep(4)
+                
+                # Scroll simulando leitura
+                page.evaluate("window.scrollTo(0, 500)")
+                time.sleep(1)
+                page.evaluate("window.scrollTo(0, 1000)")
+                time.sleep(1)
+                
+                # Captura cookies
+                cookies_list = context.cookies()
+                cookie_dict = {c["name"]: c["value"] for c in cookies_list}
+                
+                print(f"  ✅ {len(cookie_dict)} cookies capturados")
+                
+                browser.close()
+                
+                if not cookie_dict:
+                    print("  ❌ Nenhum cookie capturado")
+                    return []
+                
+                # 🔥 Faz requisições com cookies + headers realistas
+                items = self._fazer_requisicoes(cookie_dict)
+                
+        except Exception as e:
+            print(f"  ❌ Erro no browser: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return self._normalizar(items)
+    
+    def _fazer_requisicoes(self, cookies):
+        """Faz requisições à API com cookies"""
         items = []
         page_num = 0
         max_retries = 3
+        consecutive_failures = 0
         
-        while page_num < 50:  # Max 50 páginas
+        # Session com cookies
+        session = requests.Session()
+        session.cookies.update(cookies)
+        
+        while page_num < 50 and consecutive_failures < 5:
             payload = {
                 "indices": self.INDICES,
                 "query": {
@@ -104,17 +211,26 @@ class SodreExtractor:
             
             for attempt in range(max_retries):
                 try:
-                    r = requests.post(
+                    # 🔥 Headers ultra realistas
+                    headers = {
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                        "content-type": "application/json",
+                        "origin": "https://www.sodresantoro.com.br",
+                        "referer": "https://www.sodresantoro.com.br/veiculos/lotes",
+                        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                        "sec-ch-ua-mobile": "?0",
+                        "sec-ch-ua-platform": '"Windows"',
+                        "sec-fetch-dest": "empty",
+                        "sec-fetch-mode": "cors",
+                        "sec-fetch-site": "same-origin",
+                        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    }
+                    
+                    r = session.post(
                         self.API,
                         json=payload,
-                        cookies=cookies,
-                        headers={
-                            "accept": "application/json",
-                            "content-type": "application/json",
-                            "origin": "https://www.sodresantoro.com.br",
-                            "referer": "https://www.sodresantoro.com.br/",
-                            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        },
+                        headers=headers,
                         timeout=45
                     )
                     
@@ -125,83 +241,53 @@ class SodreExtractor:
                         
                         if not lotes:
                             print(f"  ✅ Fim na página {page_num+1}")
-                            return self._normalizar(items)
+                            return items
                         
                         items.extend(lotes)
                         print(f"  Pág {page_num+1}: +{len(lotes)} | Total: {len(items)}/{total}")
                         
+                        consecutive_failures = 0
+                        
                         if len(items) >= total:
-                            return self._normalizar(items)
+                            return items
                         
-                        break  # Sucesso, sai do retry
+                        break
                         
+                    elif r.status_code == 403:
+                        wait = random.randint(20, 40) * (attempt + 1)
+                        print(f"  ⚠️ 403 Forbidden (tent. {attempt+1}), aguardando {wait}s...")
+                        time.sleep(wait)
+                        
+                        if attempt == max_retries - 1:
+                            consecutive_failures += 1
+                    
                     elif r.status_code == 429:
-                        wait = random.randint(15, 30) * (attempt + 1)
+                        wait = random.randint(30, 60)
                         print(f"  ⚠️ Rate limit, aguardando {wait}s...")
                         time.sleep(wait)
+                    
                     else:
                         print(f"  ⚠️ Status {r.status_code}")
+                        consecutive_failures += 1
                         break
                         
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        wait = random.randint(10, 20)
-                        print(f"  ⚠️ Erro (tentativa {attempt+1}): aguardando {wait}s...")
+                        wait = random.randint(15, 30)
+                        print(f"  ⚠️ Erro (tent. {attempt+1}): aguardando {wait}s...")
                         time.sleep(wait)
                     else:
                         print(f"  ❌ Falha após {max_retries} tentativas")
-                        return self._normalizar(items)
+                        consecutive_failures += 1
+            
+            if consecutive_failures >= 5:
+                print("  ❌ Muitas falhas consecutivas, parando")
+                break
             
             page_num += 1
-            time.sleep(random.uniform(1.5, 3))
+            time.sleep(random.uniform(3, 6))  # Delay maior entre páginas
         
-        return self._normalizar(items)
-    
-    def _get_cookies(self):
-        """Captura cookies com anti-detection"""
-        print("  🍪 Capturando cookies...")
-        
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        '--disable-blink-features=AutomationControlled',
-                        '--no-sandbox'
-                    ]
-                )
-                
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    viewport={'width': 1920, 'height': 1080},
-                    locale='pt-BR',
-                    timezone_id='America/Sao_Paulo'
-                )
-                
-                page = context.new_page()
-                page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    window.chrome = {runtime: {}};
-                """)
-                
-                page.goto("https://www.sodresantoro.com.br", wait_until="networkidle", timeout=60000)
-                time.sleep(5)
-                
-                cookies_list = context.cookies()
-                if not cookies_list:
-                    page.goto("https://www.sodresantoro.com.br/veiculos/lotes", wait_until="networkidle")
-                    time.sleep(3)
-                    cookies_list = context.cookies()
-                
-                browser.close()
-                
-                cookie_dict = {c["name"]: c["value"] for c in cookies_list}
-                print(f"  ✅ {len(cookie_dict)} cookies")
-                return cookie_dict
-                
-        except Exception as e:
-            print(f"  ⚠️ Erro cookies: {e}")
-            return {}
+        return items
     
     def _normalizar(self, items):
         resultado = []
@@ -216,16 +302,14 @@ class SodreExtractor:
             
             auction_id = item.get("auction_id")
             
-            # Valor - API retorna em centavos!
             value_raw = item.get("bid_actual") or item.get("bid_initial")
             value = None
             if value_raw:
                 try:
-                    value = float(value_raw) / 100  # Divide por 100!
+                    value = float(value_raw) / 100
                 except:
                     pass
             
-            # Localização
             location = item.get("lot_location", "") or ""
             city, state = None, None
             if "/" in location:
@@ -236,7 +320,6 @@ class SodreExtractor:
             if state and len(state) != 2:
                 state = None
             
-            # Metadata
             metadata = {
                 "marca": item.get("lot_brand"),
                 "modelo": item.get("lot_model"),
@@ -305,7 +388,6 @@ class MegaleiloesExtractor:
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
                     time.sleep(random.uniform(3, 6))
                     
-                    # Scroll
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     time.sleep(2)
                     page.evaluate("window.scrollTo(0, 0)")
@@ -313,7 +395,6 @@ class MegaleiloesExtractor:
                     
                     soup = BeautifulSoup(page.content(), 'html.parser')
                     
-                    # Múltiplos seletores
                     cards = soup.select('div.card, a[href*="/leilao/"], div[class*="card"]')
                     
                     if not cards:
@@ -346,7 +427,6 @@ class MegaleiloesExtractor:
     def _extrair_card(self, card):
         import re
         
-        # Link
         link = card.get('href') if card.name == 'a' else None
         if not link:
             link_elem = card.select_one('a[href]')
@@ -358,7 +438,6 @@ class MegaleiloesExtractor:
         if not link.startswith('http'):
             link = self.BASE + link
         
-        # ID único do link completo
         url_parts = link.rstrip('/').split('/')
         part_id = None
         for part in reversed(url_parts):
@@ -373,10 +452,8 @@ class MegaleiloesExtractor:
         
         external_id = f"megaleiloes_{part_id}"
         
-        # Texto
         texto = card.get_text(separator=' ', strip=True)
         
-        # Título
         titulo = "Sem título"
         for sel in ['h2', 'h3', 'h4', 'strong', '.titulo']:
             elem = card.select_one(sel)
@@ -386,7 +463,6 @@ class MegaleiloesExtractor:
                     titulo = t
                     break
         
-        # Preço
         value = None
         match = re.search(r'R\$\s*([\d.]+,\d{2})', texto)
         if match:
@@ -395,7 +471,6 @@ class MegaleiloesExtractor:
             except:
                 pass
         
-        # Estado
         state = None
         valid_states = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG',
                        'PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO']
@@ -416,22 +491,23 @@ class MegaleiloesExtractor:
 
 
 class SuperbidExtractor:
-    """🔴 SUPERBID - Lógica original que funciona"""
+    """🔴 SUPERBID - Com retry melhorado"""
     
     API = "https://offer-query.superbid.net/seo/offers/"
     BASE = "https://exchange.superbid.net"
     CATS = ["carros-motos", "caminhoes-onibus"]
     
     def extrair(self):
-        print("\n🔴 SUPERBID")
+        print("\n🔴 SUPERBID (Retry melhorado)")
         
         items = []
         
         for cat in self.CATS:
             print(f"  📦 {cat}")
             page = 1
+            consecutive_errors = 0
             
-            while page <= 30:
+            while page <= 30 and consecutive_errors < 3:
                 params = {
                     "urlSeo": f"{self.BASE}/categorias/{cat}",
                     "locale": "pt_BR",
@@ -441,67 +517,92 @@ class SuperbidExtractor:
                     "timeZoneId": "America/Sao_Paulo"
                 }
                 
-                try:
-                    r = requests.get(
-                        self.API,
-                        params=params,
-                        headers={
-                            "accept": "*/*",
-                            "origin": self.BASE,
-                            "referer": f"{self.BASE}/",
-                            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                        },
-                        timeout=45
-                    )
-                    
-                    if r.status_code == 404:
-                        print(f"    ✅ Fim na pág {page}")
-                        break
-                    
-                    if r.status_code != 200:
-                        print(f"    ⚠️ Status {r.status_code}")
-                        break
-                    
-                    offers = r.json().get("offers", [])
-                    if not offers:
-                        print(f"    ✅ Fim na pág {page}")
-                        break
-                    
-                    # Filtra ofertas válidas
-                    valid = []
-                    for offer in offers:
-                        # Filtra demo/teste
-                        seller_name = (offer.get("seller", {}).get("name") or "").lower()
-                        if "demo" in seller_name:
+                max_retries = 3
+                success = False
+                
+                for attempt in range(max_retries):
+                    try:
+                        r = requests.get(
+                            self.API,
+                            params=params,
+                            headers={
+                                "accept": "*/*",
+                                "accept-language": "pt-BR,pt;q=0.9",
+                                "origin": self.BASE,
+                                "referer": f"{self.BASE}/",
+                                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                            },
+                            timeout=45
+                        )
+                        
+                        if r.status_code == 404:
+                            print(f"    ✅ Fim na pág {page}")
+                            success = True
+                            break
+                        
+                        if r.status_code == 500:
+                            wait = random.randint(10, 20) * (attempt + 1)
+                            print(f"    ⚠️ 500 Error (tent. {attempt+1}), aguardando {wait}s...")
+                            time.sleep(wait)
                             continue
                         
-                        if not offer.get("store", {}).get("name"):
-                            continue
+                        if r.status_code != 200:
+                            print(f"    ⚠️ Status {r.status_code}")
+                            if attempt == max_retries - 1:
+                                consecutive_errors += 1
+                            break
                         
-                        # Filtra inativos
-                        end_date = offer.get("endDate")
-                        if end_date:
-                            try:
-                                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-                                if end_dt <= datetime.now(end_dt.tzinfo):
-                                    continue
-                            except:
-                                pass
+                        offers = r.json().get("offers", [])
+                        if not offers:
+                            print(f"    ✅ Fim na pág {page}")
+                            success = True
+                            break
                         
-                        valid.append(offer)
-                    
-                    items.extend(valid)
-                    print(f"    Pág {page}: +{len(valid)} | Total: {len(items)}")
-                    
-                    if len(offers) < 10:
+                        valid = []
+                        for offer in offers:
+                            seller_name = (offer.get("seller", {}).get("name") or "").lower()
+                            if "demo" in seller_name:
+                                continue
+                            
+                            if not offer.get("store", {}).get("name"):
+                                continue
+                            
+                            end_date = offer.get("endDate")
+                            if end_date:
+                                try:
+                                    end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                                    if end_dt <= datetime.now(end_dt.tzinfo):
+                                        continue
+                                except:
+                                    pass
+                            
+                            valid.append(offer)
+                        
+                        items.extend(valid)
+                        print(f"    Pág {page}: +{len(valid)} | Total: {len(items)}")
+                        
+                        consecutive_errors = 0
+                        success = True
+                        
+                        if len(offers) < 10:
+                            break
+                        
                         break
-                    
-                    page += 1
-                    time.sleep(random.uniform(2, 4))
-                    
-                except Exception as e:
-                    print(f"    ❌ Erro: {e}")
+                        
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            wait = random.randint(10, 20)
+                            print(f"    ⚠️ Erro (tent. {attempt+1}): aguardando {wait}s...")
+                            time.sleep(wait)
+                        else:
+                            print(f"    ❌ Falha após {max_retries} tentativas")
+                            consecutive_errors += 1
+                
+                if not success or consecutive_errors >= 3:
                     break
+                
+                page += 1
+                time.sleep(random.uniform(2, 5))
         
         return self._normalizar(items)
     
@@ -571,11 +672,9 @@ def main():
             import traceback
             traceback.print_exc()
     
-    # Remove duplicatas
     unicos = {i['external_id']: i for i in todos}
     todos = list(unicos.values())
     
-    # Salva JSON
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     arquivo = OUTPUT_DIR / f"{CATEGORIA}_{timestamp}.json"
     
@@ -585,7 +684,6 @@ def main():
     print(f"💾 Salvo: {arquivo}")
     print(f"📊 Total: {len(todos)} itens únicos")
     
-    # Upload Supabase
     try:
         from supabase_client import SupabaseClient
         
