@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""🚗 SCRAPER: VEÍCULOS"""
+"""🚗 SCRAPER: VEÍCULOS - GRUPO 1"""
 
 import json
 import time
@@ -12,19 +12,11 @@ from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
 
-# ============================================================
-# CONFIGURAÇÕES
-# ============================================================
-
 CATEGORIA = "veiculos"
 TABELA_DB = "veiculos"
 OUTPUT_DIR = Path(f"{CATEGORIA}_data")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-
-# ============================================================
-# NORMALIZADOR
-# ============================================================
 
 class Normalizador:
     """Normaliza títulos de veículos"""
@@ -33,12 +25,12 @@ class Normalizador:
         'AUDI', 'BMW', 'CHEVROLET', 'CHERY', 'CITROEN', 'DODGE', 'FIAT', 
         'FORD', 'HONDA', 'HYUNDAI', 'JAC', 'JEEP', 'KIA', 'LAND ROVER',
         'MERCEDES', 'MITSUBISHI', 'NISSAN', 'PEUGEOT', 'RENAULT', 
-        'SUZUKI', 'TOYOTA', 'VOLKSWAGEN', 'VW', 'VOLVO'
+        'SUZUKI', 'TOYOTA', 'VOLKSWAGEN', 'VW', 'VOLVO', 'YAMAHA',
+        'SCANIA', 'VOLKS', 'MERCEDES-BENZ'
     }
     
     @classmethod
     def normalizar(cls, titulo: str, metadata: dict = None) -> str:
-        """Normaliza título de veículo"""
         if not titulo:
             return "Veículo sem título"
         
@@ -78,12 +70,8 @@ class Normalizador:
         return limpo[:100]
 
 
-# ============================================================
-# EXTRACTORS
-# ============================================================
-
 class SodreExtractor:
-    """Extrai veículos do Sodré"""
+    """Sodré: veiculos + judiciais-veiculos"""
     
     API = "https://www.sodresantoro.com.br/api/search-lots"
     INDICES = ["veiculos", "judiciais-veiculos"]
@@ -103,7 +91,7 @@ class SodreExtractor:
         items = []
         pag = 0
         
-        while pag < 50:  # Max 50 páginas
+        while pag < 50:
             payload = {
                 "indices": self.INDICES,
                 "query": {"bool": {"filter": [{"terms": {"lot_status_id": [1, 2, 3]}}]}},
@@ -166,10 +154,8 @@ class SodreExtractor:
                 "title": titulo,
                 "normalized_title": Normalizador.normalizar(titulo, metadata),
                 "value": value,
-                "value_text": f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if value else None,
                 "city": city,
                 "state": state if state and len(state) == 2 else None,
-                "description": item.get("lot_description"),
                 "link": f"https://leilao.sodresantoro.com.br/leilao/{auction_id}/lote/{lot_id}/",
                 "metadata": metadata
             })
@@ -178,7 +164,7 @@ class SodreExtractor:
 
 
 class MegaleiloesExtractor:
-    """Extrai veículos do Megaleilões"""
+    """Megaleilões: /veiculos"""
     
     BASE = "https://www.megaleiloes.com.br"
     
@@ -192,7 +178,7 @@ class MegaleiloesExtractor:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             
-            for pag in range(1, 31):  # Max 30 páginas
+            for pag in range(1, 31):
                 url = f"{self.BASE}/veiculos" + (f"?pagina={pag}" if pag > 1 else "")
                 
                 page.goto(url, timeout=60000)
@@ -270,7 +256,7 @@ class MegaleiloesExtractor:
 
 
 class SuperbidExtractor:
-    """Extrai veículos do Superbid"""
+    """Superbid: carros-motos + caminhoes-onibus"""
     
     API = "https://offer-query.superbid.net/seo/offers/"
     BASE = "https://exchange.superbid.net"
@@ -284,7 +270,7 @@ class SuperbidExtractor:
         for cat in self.CATS:
             pag = 1
             
-            while pag <= 30:  # Max 30 páginas por categoria
+            while pag <= 30:
                 params = {
                     "urlSeo": f"{self.BASE}/categorias/{cat}",
                     "locale": "pt_BR",
@@ -302,10 +288,17 @@ class SuperbidExtractor:
                     break
                 
                 for offer in offers:
-                    if self._valido(offer):
-                        item = self._normalizar(offer)
-                        if item:
-                            items.append(item)
+                    # Filtra ofertas de teste
+                    seller_name = (offer.get("seller", {}).get("name") or "").lower()
+                    if "demo" in seller_name:
+                        continue
+                    
+                    if not offer.get("store", {}).get("name"):
+                        continue
+                    
+                    item = self._normalizar(offer)
+                    if item:
+                        items.append(item)
                 
                 print(f"  {cat} pág {pag}: {len(offers)} | Total: {len(items)}")
                 
@@ -313,14 +306,6 @@ class SuperbidExtractor:
                 time.sleep(random.uniform(2, 4))
         
         return items
-    
-    def _valido(self, offer):
-        store = offer.get("store", {}).get("name")
-        seller = (offer.get("seller", {}).get("name") or "").lower()
-        
-        if not store or "demo" in seller:
-            return False
-        return True
     
     def _normalizar(self, offer):
         oid = offer.get("id")
@@ -345,14 +330,9 @@ class SuperbidExtractor:
             "city": city,
             "state": state if state and len(state) == 2 else None,
             "link": f"{self.BASE}/oferta/{oid}",
-            "store_name": offer.get("store", {}).get("name"),
             "metadata": {}
         }
 
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main():
     import argparse

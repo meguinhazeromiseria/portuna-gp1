@@ -1,8 +1,5 @@
-# ============================================================
-# eletrodomesticos.py
-# ============================================================
-
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """🔌 SCRAPER: ELETRODOMÉSTICOS"""
 
 import json
@@ -71,8 +68,9 @@ class SodreExtractor:
     
     def _is_eletro(self, item):
         titulo = (item.get("lot_title") or "").lower()
-        keywords = ['geladeira', 'freezer', 'fogao', 'microondas', 'lavadora', 'secadora', 
-                   'ar condicionado', 'ventilador', 'liquidificador', 'batedeira']
+        keywords = ['geladeira', 'freezer', 'fogao', 'fogão', 'microondas', 'lavadora', 'secadora', 
+                   'ar condicionado', 'ventilador', 'liquidificador', 'batedeira', 'cafeteira',
+                   'aspirador', 'ferro passar', 'climatizador', 'exaustor']
         return any(k in titulo for k in keywords)
     
     def _normalizar(self, items):
@@ -176,4 +174,4 @@ def main():
 
 
 if __name__ == "__main__":
-    ma
+    main()
