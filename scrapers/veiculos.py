@@ -1,603 +1,325 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""🚗 SCRAPER: VEÍCULOS - VERSÃO DEFINITIVA COM COOKIES PERSISTENTES"""
+"""
+SCRAPER VEÍCULOS - MEGALEILÕES + SUPERBID + SODRÉ SANTORO
+Versão com filtros anti-teste/demo e schema auctions correto
+"""
 
+import os
+import re
 import json
 import time
-import random
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
+from typing import Dict, List, Optional
+from urllib.parse import urljoin
 
-CATEGORIA = "veiculos"
-OUTPUT_DIR = Path(f"{CATEGORIA}_data")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-# 🍪 Cookies globais (capturados uma vez e reutilizados)
-GLOBAL_SESSION = None
+# Importa o cliente Supabase correto (com headers Content-Profile)
+from supabase_client import SupabaseClient
 
 
-class CookieManager:
-    """🍪 Gerenciador de cookies para Megaleilões e Superbid (Sodré usa estratégia própria)"""
-    
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    ]
-    
-    @classmethod
-    def criar_session_global(cls):
-        """Cria session com cookies para Megaleilões e Superbid"""
-        global GLOBAL_SESSION
-        
-        if GLOBAL_SESSION is not None:
-            return GLOBAL_SESSION
-        
-        print("\n🍪 CRIANDO SESSION GLOBAL (Megaleilões + Superbid)...")
-        
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
-                )
-                
-                user_agent = random.choice(cls.USER_AGENTS)
-                context = browser.new_context(
-                    user_agent=user_agent,
-                    viewport={'width': 1920, 'height': 1080},
-                    locale='pt-BR',
-                )
-                
-                page = context.new_page()
-                
-                context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    window.chrome = {runtime: {}};
-                """)
-                
-                # Visita sites (exceto Sodré)
-                sites = [
-                    "https://www.megaleiloes.com.br",
-                    "https://exchange.superbid.net",
-                ]
-                
-                all_cookies = {}
-                
-                for site in sites:
-                    try:
-                        page.goto(site, wait_until="domcontentloaded", timeout=20000)
-                        time.sleep(2)
-                        
-                        cookies = context.cookies()
-                        for cookie in cookies:
-                            all_cookies[cookie['name']] = cookie['value']
-                    except:
-                        pass
-                
-                browser.close()
-                
-                print(f"  ✅ {len(all_cookies)} cookies capturados\n")
-                
-                # Cria session
-                session = requests.Session()
-                session.cookies.update(all_cookies)
-                session.headers.update({
-                    "User-Agent": user_agent,
-                    "Accept": "*/*",
-                    "Accept-Language": "pt-BR,pt;q=0.9",
-                })
-                
-                GLOBAL_SESSION = session
-                return session
-                
-        except Exception as e:
-            print(f"  ⚠️ Erro: {e}")
-            print("  ℹ️ Criando session básica...\n")
-            
-            session = requests.Session()
-            session.headers.update({
-                "User-Agent": random.choice(cls.USER_AGENTS),
-                "Accept": "*/*",
-            })
-            
-            GLOBAL_SESSION = session
-            return session
-
-
-class Normalizador:
-    """Normaliza títulos de veículos"""
-    
-    MARCAS = {
-        'AUDI', 'BMW', 'CHEVROLET', 'CHERY', 'CITROEN', 'DODGE', 'FIAT', 
-        'FORD', 'HONDA', 'HYUNDAI', 'JAC', 'JEEP', 'KIA', 'LAND ROVER',
-        'MERCEDES', 'MITSUBISHI', 'NISSAN', 'PEUGEOT', 'RENAULT', 
-        'SUZUKI', 'TOYOTA', 'VOLKSWAGEN', 'VW', 'VOLVO', 'YAMAHA',
-        'SCANIA', 'VOLKS', 'MERCEDES-BENZ'
-    }
-    
-    @classmethod
-    def normalizar(cls, titulo: str, metadata: dict = None) -> str:
-        if not titulo:
-            return "Veículo sem título"
-        
-        import re
-        limpo = re.sub(r'(lote\s*\d+|placa\s*[a-z]{3}\d[a-z0-9]\d{2}|km\s*\d+)', '', titulo, flags=re.IGNORECASE)
-        limpo = re.sub(r'\s+', ' ', limpo).strip()
-        
-        if metadata:
-            marca = metadata.get('marca') or metadata.get('brand', '')
-            modelo = metadata.get('modelo') or metadata.get('model', '')
-            ano = metadata.get('ano_modelo') or metadata.get('year', '')
-            
-            if marca and modelo:
-                result = f"{marca.title()} {modelo.title()}"
-                if ano:
-                    result += f" {ano}"
-                return result[:100]
-        
-        words = limpo.upper().split()
-        marca = None
-        modelo = []
-        
-        for i, word in enumerate(words):
-            if word in cls.MARCAS:
-                marca = word
-                modelo = words[i+1:i+4]
-                break
-        
-        if marca:
-            modelo_str = ' '.join(modelo).title()
-            return f"{marca.title()} {modelo_str}".strip()[:100]
-        
-        return limpo[:100]
-
-
-class SodreExtractor:
-    """🔵 SODRÉ - ESTRATÉGIA VENCEDORA COM COOKIES EXPLÍCITOS"""
-    
-    API = "https://www.sodresantoro.com.br/api/search-lots"
-    INDICES = ["veiculos", "judiciais-veiculos"]
-    ACTIVE_STATUS = [1, 2, 3]
+class VeiculosScraper:
+    """Scraper unificado para Megaleilões, Superbid e Sodré Santoro"""
     
     def __init__(self):
-        # 🔥 Session isolada (não compartilhada)
         self.session = requests.Session()
-        self.cookies = {}
-    
-    def _capturar_cookies_sodre(self):
-        """Captura cookies específicos do Sodré com fallback de 2 páginas"""
-        print("  🍪 Obtendo cookies...")
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        })
         
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        '--disable-blink-features=AutomationControlled',
-                        '--disable-dev-shm-usage',
-                        '--no-sandbox',
-                    ]
-                )
-                
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    viewport={'width': 1920, 'height': 1080},
-                    locale='pt-BR',
-                    timezone_id='America/Sao_Paulo',
-                )
-                
-                page = context.new_page()
-                
-                # 🔥 FIX 1: page.add_init_script (após criar page)
-                page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    window.chrome = {runtime: {}};
-                """)
-                
-                # 🔥 FIX 2: Tenta homepage primeiro
-                page.goto("https://www.sodresantoro.com.br", wait_until="networkidle", timeout=60000)
-                time.sleep(5)  # 🔥 FIX 3: Aguarda 5 segundos
-                
-                cookies = context.cookies()
-                
-                # 🔥 FIX 4: Fallback para página interna se falhar
-                if not cookies:
-                    print("    ⚠️ Tentando página de veículos...")
-                    page.goto("https://www.sodresantoro.com.br/veiculos/lotes", wait_until="networkidle")
-                    time.sleep(3)
-                    cookies = context.cookies()
-                
-                browser.close()
-                
-                cookie_dict = {c["name"]: c["value"] for c in cookies}
-                print(f"  ✅ {len(cookie_dict)} cookies")
-                
-                return cookie_dict
-                
-        except Exception as e:
-            print(f"  ❌ Erro: {e}")
-            return {}
-    
-    def extrair(self):
-        print("\n🔵 SODRÉ")
-        
-        # Captura cookies específicos para Sodré
-        self.cookies = self._capturar_cookies_sodre()
-        
-        if not self.cookies:
-            print("  ⚠️ Sem cookies, pulando Sodré")
-            return []
-        
-        items = []
-        page_num = 0
-        max_pages = 50
-        
-        while page_num < max_pages:
-            payload = {
-                "indices": self.INDICES,
-                "query": {"bool": {"filter": [{"terms": {"lot_status_id": self.ACTIVE_STATUS}}]}},
-                "from": page_num * 100,
-                "size": 100,
-                "sort": [
-                    {"lot_status_id_order": {"order": "asc"}},
-                    {"auction_date_init": {"order": "asc"}}
-                ]
+        self.items = []
+        self.stats = {
+            'sodre': 0,
+            'megaleiloes': 0,
+            'superbid': 0,
+            'filtered_test_items': 0,
+            'filter_details': {
+                'no_store': 0,
+                'demo_seller': 0,
+                'demo_auctioneer': 0,
+                'deploy_text': 0
             }
-            
-            try:
-                headers = {
-                    "accept": "application/json",
-                    "content-type": "application/json",
-                    "origin": "https://www.sodresantoro.com.br",
-                    "referer": "https://www.sodresantoro.com.br/veiculos/lotes",
-                }
-                
-                # 🔥 FIX 5: Cookies EXPLÍCITOS no request
-                r = self.session.post(
-                    self.API, 
-                    json=payload, 
-                    headers=headers,
-                    cookies=self.cookies,  # ← CRÍTICO!
-                    timeout=45
-                )
-                
-                if r.status_code == 200:
-                    data = r.json()
-                    lotes = data.get("results", [])
-                    total = data.get("total", 0)
-                    
-                    if not lotes:
-                        break
-                    
-                    items.extend(lotes)
-                    print(f"  Pág {page_num+1}: +{len(lotes)} | Total: {len(items)}/{total}")
-                    
-                    if len(items) >= total:
-                        break
-                elif r.status_code == 403:
-                    print(f"  ⚠️ Status 403 - proteção anti-bot detectou")
-                    break
-                else:
-                    print(f"  ⚠️ Status {r.status_code}")
-                    break
-                    
-            except Exception as e:
-                print(f"  ❌ Erro: {e}")
-                break
-            
-            page_num += 1
-            time.sleep(random.uniform(3, 6))
-        
-        return self._normalizar(items)
-    
-    def _normalizar(self, items):
-        resultado = []
-        
-        for item in items:
-            if item.get("lot_status_id") not in self.ACTIVE_STATUS:
-                continue
-            
-            lot_id = item.get("lot_id")
-            if not lot_id:
-                continue
-            
-            value_raw = item.get("bid_actual") or item.get("bid_initial")
-            value = float(value_raw) / 100 if value_raw else None
-            
-            location = item.get("lot_location", "") or ""
-            city, state = None, None
-            if "/" in location:
-                parts = location.split("/")
-                city = parts[0].strip()
-                state = parts[1].strip() if len(parts) > 1 else None
-            
-            metadata = {
-                "marca": item.get("lot_brand"),
-                "modelo": item.get("lot_model"),
-                "ano_modelo": item.get("lot_year_model"),
-            }
-            
-            titulo = item.get("lot_title") or "Sem título"
-            
-            resultado.append({
-                "source": "sodre",
-                "external_id": f"sodre_{lot_id}",
-                "title": titulo,
-                "normalized_title": Normalizador.normalizar(titulo, metadata),
-                "value": value,
-                "city": city,
-                "state": state,
-                "link": f"https://leilao.sodresantoro.com.br/leilao/{item.get('auction_id')}/lote/{lot_id}/",
-                "metadata": metadata
-            })
-        
-        return resultado
-
-
-class MegaleiloesExtractor:
-    """🟢 MEGALEILÕES - USA COOKIES GLOBAIS"""
-    
-    BASE = "https://www.megaleiloes.com.br"
-    
-    def extrair(self):
-        print("\n🟢 MEGALEILÕES")
-        
-        session = GLOBAL_SESSION
-        if not session:
-            print("  ❌ Session global não inicializada")
-            return []
-        
-        items = []
-        ids = set()
-        
-        for pag in range(1, 10):
-            url = f"{self.BASE}/veiculos" + (f"?pagina={pag}" if pag > 1 else "")
-            
-            try:
-                headers = {
-                    "referer": self.BASE,
-                    "origin": self.BASE,
-                }
-                
-                r = session.get(url, headers=headers, timeout=30)
-                
-                if r.status_code != 200:
-                    print(f"  ⚠️ Status {r.status_code}")
-                    break
-                
-                soup = BeautifulSoup(r.content, 'html.parser')
-                cards = soup.select('div.card, a[href*="/leilao/"]')
-                
-                if not cards:
-                    break
-                
-                novos = 0
-                for card in cards:
-                    item = self._extrair_card(card)
-                    if item and item['external_id'] not in ids:
-                        items.append(item)
-                        ids.add(item['external_id'])
-                        novos += 1
-                
-                print(f"  Pág {pag}: +{novos} | Total: {len(items)}")
-                
-                if novos == 0:
-                    break
-                
-                time.sleep(random.uniform(2, 4))
-                
-            except Exception as e:
-                print(f"  ⚠️ Erro pág {pag}: {e}")
-                break
-        
-        return items
-    
-    def _extrair_card(self, card):
-        import re
-        
-        link = card.get('href') if card.name == 'a' else None
-        if not link:
-            link_elem = card.select_one('a[href]')
-            link = link_elem.get('href') if link_elem else None
-        
-        if not link or 'javascript' in link:
-            return None
-        
-        if not link.startswith('http'):
-            link = self.BASE + link
-        
-        part_id = link.rstrip('/').split('/')[-1].split('?')[0]
-        if not part_id:
-            part_id = str(abs(hash(link)) % 10000000)
-        
-        texto = card.get_text(separator=' ', strip=True)
-        
-        titulo = "Sem título"
-        for sel in ['h2', 'h3', 'strong']:
-            elem = card.select_one(sel)
-            if elem:
-                t = elem.get_text(strip=True)
-                if 10 < len(t) < 200:
-                    titulo = t
-                    break
-        
-        value = None
-        match = re.search(r'R\$\s*([\d.]+,\d{2})', texto)
-        if match:
-            try:
-                value = float(match.group(1).replace('.', '').replace(',', '.'))
-            except:
-                pass
-        
-        return {
-            "source": "megaleiloes",
-            "external_id": f"megaleiloes_{part_id}",
-            "title": titulo,
-            "normalized_title": Normalizador.normalizar(titulo),
-            "value": value,
-            "link": link,
-            "metadata": {}
         }
-
-
-class SuperbidExtractor:
-    """🔴 SUPERBID - USA COOKIES GLOBAIS"""
-    
-    API = "https://offer-query.superbid.net/seo/offers/"
-    BASE = "https://exchange.superbid.net"
-    CATS = ["carros-motos", "caminhoes-onibus"]
-    
-    def __init__(self):
-        self.filtered_stats = {
-            'demo_seller': 0,
-            'demo_auctioneer': 0,
-            'deploy_text': 0,
-            'no_store': 0
-        }
-    
-    def is_test_offer(self, offer: dict) -> tuple:
-        """Verifica se a oferta é de teste/demo"""
-        seller = offer.get("seller", {})
-        auction = offer.get("auction", {})
-        product = offer.get("product", {})
-        store = offer.get("store", {})
         
-        store_name = store.get("name")
-        if not store_name:
-            return True, "no_store"
+        # Lista de termos que indicam itens de teste/demo
+        self.test_patterns = [
+            r'\bdemo\b',
+            r'\bteste\b',
+            r'\btest\b',
+            r'\bdeploy\b',
+            r'^teste',
+            r'demonstra[cç][aã]o',
+        ]
         
-        seller_name = seller.get("name") or ""
-        seller_name = seller_name.lower() if seller_name else ""
-        if "vendedor demo" in seller_name or "demo" in seller_name:
-            return True, "demo_seller"
+        self.compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.test_patterns]
+    
+    def is_test_item(self, item: dict) -> tuple[bool, str]:
+        """
+        Verifica se um item é de teste/demo (com proteção contra None)
+        Returns: (is_test, reason)
+        """
+        # 1. Sem loja (store_name null/vazio) = geralmente teste
+        store = item.get('store_name')
+        if not store or not str(store).strip():
+            return True, 'no_store'
         
-        auctioneer = auction.get("auctioneer") or ""
+        # 2. Verifica vendedor - COM PROTEÇÃO CONTRA None
+        seller = item.get('store_name') or ""
+        seller = seller.lower() if seller else ""
+        if 'demo' in seller or 'vendedor demo' in seller:
+            return True, 'demo_seller'
+        
+        # 3. Verifica leiloeiro - COM PROTEÇÃO CONTRA None
+        auctioneer = item.get('auction_name') or ""
         auctioneer = auctioneer.lower() if auctioneer else ""
-        if "demo" in auctioneer or "corretor demo" in auctioneer or "leiloeiro demo" in auctioneer:
-            return True, "demo_auctioneer"
+        if 'demo' in auctioneer or 'leiloeiro demo' in auctioneer or 'corretor demo' in auctioneer:
+            return True, 'demo_auctioneer'
         
-        title = product.get("shortDesc") or ""
+        # 4. Verifica título e descrição - COM PROTEÇÃO CONTRA None
+        title = item.get('title') or ""
         title = title.lower() if title else ""
         
-        description = offer.get("offerDescription", {}).get("offerDescription") or ""
-        description = description.lower() if description else ""
+        desc = item.get('description_preview') or ""
+        desc = desc.lower() if desc else ""
         
-        if "deploy" in title or "deploy" in description:
-            return True, "deploy_text"
+        # Verifica padrões de teste
+        for pattern in self.compiled_patterns:
+            if pattern.search(title) or pattern.search(desc):
+                if 'deploy' in title or 'deploy' in desc:
+                    return True, 'deploy_text'
+                return True, 'test_text'
         
-        return False, ""
+        return False, ''
     
-    def extrair(self):
-        print("\n🔴 SUPERBID")
+    def setup_global_cookies(self):
+        """Cria uma sessão com cookies para Megaleilões e Superbid"""
+        print("🍪 CRIANDO SESSION GLOBAL (Megaleilões + Superbid)...")
         
-        session = GLOBAL_SESSION
-        if not session:
-            print("  ❌ Session global não inicializada")
-            return []
-        
+        try:
+            # Carrega as páginas principais para capturar cookies
+            self.session.get('https://www.megaleiloes.com.br', timeout=15)
+            time.sleep(1)
+            self.session.get('https://www.superbid.net', timeout=15)
+            
+            cookies_count = len(self.session.cookies)
+            print(f"  ✅ {cookies_count} cookies capturados")
+            
+        except Exception as e:
+            print(f"  ⚠️ Erro ao criar sessão: {e}")
+    
+    def scrape_sodre(self) -> List[dict]:
+        """Scrape Sodré Santoro"""
+        print("🔵 SODRÉ")
         items = []
         
-        for cat in self.CATS:
-            print(f"  📦 {cat}")
+        try:
+            print("  🍪 Obtendo cookies...")
+            r1 = self.session.get('https://www.sodresantoro.com.br', timeout=15)
+            cookies_count = len(self.session.cookies)
+            print(f"  ✅ {cookies_count} cookies")
+            
+            time.sleep(2)
+            
+            url = 'https://www.sodresantoro.com.br/peca/proximos-leiloes'
+            r = self.session.get(url, timeout=30)
+            
+            if r.status_code == 403:
+                print(f"  ⚠️ Status 403 - proteção anti-bot detectou")
+                return items
+            
+            r.raise_for_status()
+            data = r.json()
+            
+            for category in data:
+                cat_items = category.get('items', [])
+                for item in cat_items:
+                    cleaned = self._clean_sodre_item(item)
+                    if cleaned:
+                        items.append(cleaned)
+        
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 403:
+                print(f"  ⚠️ Bloqueado por Cloudflare/WAF")
+            else:
+                print(f"  ❌ Erro HTTP {e.response.status_code}")
+        
+        except Exception as e:
+            print(f"  ❌ Erro: {e}")
+        
+        self.stats['sodre'] = len(items)
+        return items
+    
+    def scrape_megaleiloes(self) -> List[dict]:
+        """Scrape Megaleilões"""
+        print("🟢 MEGALEILÕES")
+        items = []
+        
+        try:
             page = 1
-            consecutive_errors = 0
+            while True:
+                url = f'https://www.megaleiloes.com.br/api/products/search?includeImages=1&size=60&page={page}&onlyWithImage=true&sortKey=DATE_DESC&type=VEHICLE'
+                
+                r = self.session.get(url, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+                
+                results = data.get('result', [])
+                if not results:
+                    break
+                
+                for item in results:
+                    cleaned = self._clean_megaleiloes_item(item)
+                    if cleaned:
+                        items.append(cleaned)
+                
+                print(f"  Pág {page}: +{len(results)} | Total: {len(items)}")
+                
+                if len(results) < 60:
+                    break
+                
+                page += 1
+                time.sleep(1)
+        
+        except Exception as e:
+            print(f"  ❌ Erro: {e}")
+        
+        self.stats['megaleiloes'] = len(items)
+        return items
+    
+    def scrape_superbid(self) -> List[dict]:
+        """Scrape Superbid usando a API que FUNCIONA (do antigo)"""
+        print("🔴 SUPERBID")
+        items = []
+        
+        # Apenas categorias de veículos
+        categories = {
+            'carros-motos': 'Carros & Motos',
+            'caminhoes-onibus': 'Caminhões & Ônibus'
+        }
+        
+        BASE_URL = "https://exchange.superbid.net"
+        API_BASE = "https://offer-query.superbid.net"
+        
+        for cat_slug, cat_name in categories.items():
+            print(f"  📦 {cat_name}")
             local_filtered = {'demo_seller': 0, 'demo_auctioneer': 0, 'deploy_text': 0, 'no_store': 0}
             
-            while page <= 20 and consecutive_errors < 5:
+            page = 1
+            consecutive_errors = 0
+            max_retries = 3
+            
+            while True:
+                url = f"{API_BASE}/seo/offers/"
+                params = {
+                    "urlSeo": f"{BASE_URL}/categorias/{cat_slug}",
+                    "locale": "pt_BR",
+                    "orderBy": "offerDetail.percentDiffReservedPriceOverFipePrice:asc",
+                    "pageNumber": page,
+                    "pageSize": 100,
+                    "portalId": "[2,15]",
+                    "preOrderBy": "orderByFirstOpenedOffersAndSecondHasPhoto",
+                    "requestOrigin": "marketplace",
+                    "searchType": "openedAll",
+                    "timeZoneId": "America/Sao_Paulo",
+                }
+                
                 try:
-                    params = {
-                        "urlSeo": f"{self.BASE}/categorias/{cat}",
-                        "locale": "pt_BR",
-                        "orderBy": "offerDetail.percentDiffReservedPriceOverFipePrice:asc",
-                        "pageNumber": page,
-                        "pageSize": 100,
-                        "portalId": "[2,15]",
-                        "preOrderBy": "orderByFirstOpenedOffersAndSecondHasPhoto",
-                        "requestOrigin": "marketplace",
-                        "searchType": "openedAll",
-                        "timeZoneId": "America/Sao_Paulo",
-                    }
-                    
-                    headers = {
-                        "accept": "*/*",
-                        "accept-language": "pt-BR,pt;q=0.9",
-                        "origin": self.BASE,
-                        "referer": f"{self.BASE}/",
-                    }
-                    
-                    r = session.get(
-                        self.API, 
-                        params=params, 
-                        headers=headers,
-                        timeout=45
-                    )
+                    r = self.session.get(url, params=params, timeout=45)
                     
                     if r.status_code == 404:
                         print(f"    ✅ Fim: página {page} retornou 404")
                         break
                     
-                    if r.status_code == 500:
-                        consecutive_errors += 1
-                        wait = 20 * consecutive_errors
-                        print(f"    ⚠️ 500 Error (tentativa {consecutive_errors}/5), aguardando {wait}s...")
-                        time.sleep(wait)
-                        continue
-                    
-                    if r.status_code != 200:
-                        print(f"    ⚠️ Status {r.status_code}")
-                        consecutive_errors += 1
-                        if consecutive_errors >= 5:
-                            break
-                        time.sleep(10)
-                        continue
-                    
-                    try:
-                        offers = r.json().get("offers", [])
-                    except json.JSONDecodeError:
-                        print(f"    ⚠️ Erro JSON na página {page}")
-                        consecutive_errors += 1
-                        continue
-                    
-                    if not offers or len(offers) == 0:
-                        print(f"    ✅ Fim: página {page} vazia")
-                        break
-                    
-                    valid = []
-                    for offer in offers:
-                        is_test, reason = self.is_test_offer(offer)
-                        if is_test:
-                            local_filtered[reason] += 1
-                            self.filtered_stats[reason] += 1
+                    if r.status_code == 200:
+                        try:
+                            data = r.json()
+                        except:
+                            print(f"    ⚠️ Erro JSON na página {page}")
+                            consecutive_errors += 1
+                            if consecutive_errors >= max_retries:
+                                break
                             continue
-                        valid.append(offer)
+                        
+                        page_offers = data.get("offers", [])
+                        
+                        if not page_offers:
+                            print(f"    ✅ Fim: página {page} vazia")
+                            break
+                        
+                        # Filtra ofertas de teste e inativas
+                        valid_count = 0
+                        for offer in page_offers:
+                            # Normaliza para o schema
+                            cleaned = self._clean_superbid_offer(offer, cat_slug)
+                            if not cleaned:
+                                continue
+                            
+                            # Aplica filtros anti-teste
+                            is_test, reason = self.is_test_item(cleaned)
+                            if is_test:
+                                local_filtered[reason] += 1
+                                self.stats['filtered_test_items'] += 1
+                                self.stats['filter_details'][reason] += 1
+                                continue
+                            
+                            # Verifica se está ativa
+                            end_date = offer.get("endDate")
+                            if end_date:
+                                try:
+                                    end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                                    if end_dt <= datetime.now(end_dt.tzinfo):
+                                        continue  # Oferta expirada
+                                except:
+                                    pass
+                            
+                            items.append(cleaned)
+                            valid_count += 1
+                        
+                        print(f"    Pág {page}: +{valid_count} válidos | Total: {len(items)}")
+                        
+                        if len(page_offers) < 10:
+                            print(f"    ✅ Fim: última página com {len(page_offers)} ofertas")
+                            break
+                        
+                        page += 1
+                        consecutive_errors = 0
+                        time.sleep(2)  # Delay entre páginas
                     
-                    items.extend(valid)
-                    print(f"    Pág {page}: +{len(valid)} válidos | Total: {len(items)}")
+                    elif r.status_code == 429:
+                        wait_time = 20
+                        print(f"    ⚠️ Rate limit, aguardando {wait_time}s...")
+                        time.sleep(wait_time)
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_retries:
+                            break
                     
-                    if len(offers) < 10:
-                        print(f"    ✅ Fim: Última página com {len(offers)} ofertas")
-                        break
-                    
-                    page += 1
-                    consecutive_errors = 0
-                    time.sleep(random.uniform(2, 5))
-                    
+                    else:
+                        print(f"    ⚠️ Status {r.status_code} na página {page}")
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_retries:
+                            break
+                
                 except requests.exceptions.Timeout:
-                    print(f"    ⚠️ Timeout na página {page}")
                     consecutive_errors += 1
+                    print(f"    ⚠️ Timeout na página {page} ({consecutive_errors}/{max_retries})")
+                    if consecutive_errors >= max_retries:
+                        break
                     time.sleep(10)
+                
                 except Exception as e:
-                    print(f"    ⚠️ Erro: {e}")
                     consecutive_errors += 1
+                    print(f"    ❌ Erro na página {page}: {e}")
+                    if consecutive_errors >= max_retries:
+                        break
                     time.sleep(10)
             
-            total_filtered_cat = sum(local_filtered.values())
-            if total_filtered_cat > 0:
-                print(f"    🚫 Filtrados {total_filtered_cat} itens de teste/demo:")
+            # Mostra filtros da categoria
+            total_filtered = sum(local_filtered.values())
+            if total_filtered > 0:
+                print(f"    🚫 Filtrados {total_filtered} nesta categoria:")
                 if local_filtered['no_store'] > 0:
                     print(f"       • Sem loja: {local_filtered['no_store']}")
                 if local_filtered['demo_seller'] > 0:
@@ -607,131 +329,302 @@ class SuperbidExtractor:
                 if local_filtered['deploy_text'] > 0:
                     print(f"       • Texto 'deploy': {local_filtered['deploy_text']}")
             
-            if cat != self.CATS[-1]:
-                time.sleep(random.uniform(10, 20))
+            time.sleep(10)  # Delay entre categorias
         
-        total_filtered = sum(self.filtered_stats.values())
-        if total_filtered > 0:
-            print(f"\n  🚫 TOTAL FILTRADO: {total_filtered} ofertas de teste/demo")
-            print(f"     • Sem loja (store_name NULL): {self.filtered_stats['no_store']}")
-            print(f"     • Vendedor Demo: {self.filtered_stats['demo_seller']}")
-            print(f"     • Leiloeiro Demo: {self.filtered_stats['demo_auctioneer']}")
-            print(f"     • Texto 'deploy': {self.filtered_stats['deploy_text']}")
-        
-        return self._normalizar(items)
+        self.stats['superbid'] = len(items)
+        return items
     
-    def _normalizar(self, offers):
-        resultado = []
-        
-        for offer in offers:
-            oid = offer.get("id")
-            if not oid:
-                continue
-            
-            titulo = offer.get("product", {}).get("shortDesc", "Sem título")
-            
-            resultado.append({
-                "source": "superbid",
-                "external_id": f"superbid_{oid}",
-                "title": titulo,
-                "normalized_title": Normalizador.normalizar(titulo),
-                "value": offer.get("offerDetail", {}).get("currentMinBid"),
-                "link": f"{self.BASE}/oferta/{oid}",
-                "metadata": {}
-            })
-        
-        return resultado
-
-
-def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--fonte', choices=['sodre', 'megaleiloes', 'superbid', 'all'], default='all')
-    args = parser.parse_args()
-    
-    print("="*60)
-    print(f"🚗 SCRAPER: {CATEGORIA.upper()} - VERSÃO FINAL")
-    print("="*60)
-    
-    extractors = {
-        'sodre': SodreExtractor,
-        'megaleiloes': MegaleiloesExtractor,
-        'superbid': SuperbidExtractor
-    }
-    
-    fontes = [args.fonte] if args.fonte != 'all' else list(extractors.keys())
-    
-    # 🍪 Cria session global APENAS se necessário (Megaleilões ou Superbid)
-    if 'megaleiloes' in fontes or 'superbid' in fontes:
-        CookieManager.criar_session_global()
-    
-    todos = []
-    
-    for fonte in fontes:
+    def _clean_sodre_item(self, item: dict) -> Optional[dict]:
+        """Limpa item do Sodré"""
         try:
-            ext = extractors[fonte]()
-            items = ext.extrair()
-            todos.extend(items)
-            print(f"✅ {fonte}: {len(items)} itens\n")
+            item_id = item.get('id')
+            title = item.get('name', '').strip()
+            
+            if not item_id or not title:
+                return None
+            
+            auction = item.get('auction', {})
+            
+            return {
+                'source': 'sodre',
+                'external_id': str(item_id),
+                'title': title,
+                'normalized_title': self._normalize_title(title),
+                'description_preview': item.get('description', '')[:255] if item.get('description') else None,
+                'value': item.get('current_bid'),
+                'value_text': f"R$ {item.get('current_bid', 0):.2f}" if item.get('current_bid') else None,
+                'city': auction.get('city'),
+                'state': auction.get('state'),
+                'auction_date': auction.get('date'),
+                'auction_type': auction.get('type', 'Leilão'),
+                'auction_name': auction.get('name'),
+                'lot_number': item.get('lot'),
+                'link': f"https://www.sodresantoro.com.br/peca/{item_id}",
+                'metadata': {
+                    'images': item.get('images', []),
+                    'status': item.get('status')
+                }
+            }
+        except:
+            return None
+    
+    def _clean_megaleiloes_item(self, item: dict) -> Optional[dict]:
+        """Limpa item do Megaleilões"""
+        try:
+            item_id = item.get('id')
+            title = item.get('name', '').strip()
+            
+            if not item_id or not title:
+                return None
+            
+            auction = item.get('auction', {})
+            location = item.get('location', {})
+            
+            value = item.get('value')
+            if value:
+                try:
+                    value = float(value)
+                except:
+                    value = None
+            
+            return {
+                'source': 'megaleiloes',
+                'external_id': str(item_id),
+                'title': title,
+                'normalized_title': self._normalize_title(title),
+                'description_preview': item.get('description', '')[:255] if item.get('description') else None,
+                'value': value,
+                'value_text': f"R$ {value:.2f}" if value else None,
+                'city': location.get('city'),
+                'state': location.get('state'),
+                'auction_date': auction.get('date'),
+                'auction_type': auction.get('type', 'Leilão'),
+                'auction_name': auction.get('name'),
+                'lot_number': item.get('lot'),
+                'total_visits': item.get('totalVisits', 0),
+                'link': f"https://www.megaleiloes.com.br/imovel/{item_id}",
+                'metadata': {
+                    'images': item.get('images', []),
+                    'category': item.get('category')
+                }
+            }
+        except:
+            return None
+    
+    def _clean_superbid_offer(self, offer: dict, category_slug: str) -> Optional[dict]:
+        """Limpa item do Superbid (formato da API offer-query)"""
+        try:
+            product = offer.get("product", {})
+            auction = offer.get("auction", {})
+            detail = offer.get("offerDetail", {})
+            seller = offer.get("seller", {})
+            store = offer.get("store", {})
+            
+            offer_id = offer.get("id")
+            title = product.get("shortDesc", "").strip()
+            
+            if not offer_id or not title:
+                return None
+            
+            # Valor
+            min_bid = detail.get("currentMinBid") or detail.get("initialBidValue")
+            if min_bid:
+                try:
+                    min_bid = float(min_bid)
+                except:
+                    min_bid = None
+            
+            # Data do leilão
+            auction_date = None
+            end_date_str = offer.get("endDate")
+            if end_date_str:
+                try:
+                    auction_date = datetime.fromisoformat(
+                        end_date_str.replace('Z', '+00:00')
+                    ).isoformat()
+                except:
+                    pass
+            
+            # Localização (extrai cidade/estado do campo city do seller)
+            city = None
+            state = None
+            seller_city = seller.get("city", "")
+            if seller_city:
+                if '/' in seller_city:
+                    parts = seller_city.split('/')
+                    city = parts[0].strip()
+                    state = parts[1].strip() if len(parts) > 1 else None
+                elif ' - ' in seller_city:
+                    parts = seller_city.split(' - ')
+                    city = parts[0].strip()
+                    state = parts[1].strip() if len(parts) > 1 else None
+                else:
+                    city = seller_city.strip()
+                
+                if state and (len(state) != 2 or not state.isupper()):
+                    state = None
+            
+            # Descrição
+            full_desc = offer.get("offerDescription", {}).get("offerDescription", "")
+            desc_preview = full_desc[:255] if full_desc else title[:150]
+            
+            # Galeria de imagens
+            gallery = product.get("galleryJson", [])
+            total_fotos = len([i for i in gallery if i.get("link")]) if gallery else 0
+            
+            return {
+                'source': 'superbid',
+                'external_id': str(offer_id),
+                'title': title,
+                'normalized_title': self._normalize_title(title),
+                'description_preview': desc_preview,
+                'description': full_desc if full_desc else None,
+                'value': min_bid,
+                'value_text': detail.get("currentMinBidFormatted") or detail.get("initialBidValueFormatted"),
+                'city': city,
+                'state': state,
+                'address': seller_city if seller_city else None,
+                'auction_date': auction_date,
+                'auction_type': auction.get("modalityDesc", "Leilão"),
+                'auction_name': auction.get("desc"),
+                'store_name': store.get("name"),
+                'lot_number': offer.get("lotNumber"),
+                'total_visits': offer.get("visits", 0),
+                'total_bids': offer.get("totalBids", 0),
+                'total_bidders': offer.get("totalBidders", 0),
+                'link': f"https://exchange.superbid.net/oferta/{offer_id}",
+                'metadata': {
+                    'leiloeiro': auction.get("auctioneer"),
+                    'quantidade_lote': offer.get("quantityInLot"),
+                    'vendedor': {
+                        'nome': seller.get("name"),
+                        'empresa': seller.get("company"),
+                    },
+                    'preco_detalhado': {
+                        'inicial': detail.get("initialBidValue"),
+                        'lance_minimo': detail.get("currentMinBid"),
+                        'lance_maximo': detail.get("currentMaxBid"),
+                    },
+                    'midia': {
+                        'total_fotos': total_fotos,
+                        'total_videos': product.get("videoUrlCount", 0),
+                    },
+                    'category': category_slug
+                }
+            }
+        except:
+            return None
+    
+    
+    def _normalize_title(self, title: str) -> str:
+        """Normaliza título para busca"""
+        if not title:
+            return ''
+        
+        title = title.lower()
+        title = re.sub(r'[^\w\s]', ' ', title)
+        title = re.sub(r'\s+', ' ', title)
+        return title.strip()
+    
+    def save_json(self, items: List[dict], output_dir: str = 'veiculos_data') -> str:
+        """Salva dados em JSON"""
+        Path(output_dir).mkdir(exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filepath = f"{output_dir}/veiculos_{timestamp}.json"
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+        
+        return filepath
+    
+    def upload_to_supabase(self, items: List[dict], table_name: str = 'veiculos'):
+        """Faz upload para Supabase usando o cliente correto"""
+        print("📤 Enviando para Supabase...")
+        
+        try:
+            client = SupabaseClient()
+            stats = client.upsert(table_name, items)
+            
+            print(f"  ✅ {stats['inserted']} novos, {stats['updated']} atualizados, {stats['errors']} erros")
+            
+            if stats['errors'] > 0:
+                print(f"  ⚠️ Alguns itens falharam - verifique os logs acima")
+        
         except Exception as e:
-            print(f"❌ {fonte}: {e}\n")
+            print(f"  ❌ Erro ao enviar: {e}")
     
-    unicos = {i['external_id']: i for i in todos}
-    todos = list(unicos.values())
-    
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    arquivo = OUTPUT_DIR / f"{CATEGORIA}_{timestamp}.json"
-    
-    with open(arquivo, "w", encoding="utf-8") as f:
-        json.dump(todos, f, ensure_ascii=False, indent=2, default=str)
-    
-    print(f"💾 Salvo: {arquivo}")
-    print(f"📊 Total: {len(todos)} itens únicos")
-    
-    # 🔥 CORREÇÃO DEFINITIVA DO SUPABASE
-    try:
-        from supabase_client import SupabaseClient
+    def deduplicate(self, items: List[dict]) -> List[dict]:
+        """Remove duplicatas baseado em source + external_id"""
+        seen = set()
+        unique = []
         
-        print("\n📤 Enviando para Supabase...")
-        client = SupabaseClient()
+        for item in items:
+            key = (item['source'], item['external_id'])
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
         
-        # Verifica qual método está disponível
-        if hasattr(client, 'upsert_normalized'):
-            # Versão otimizada (nova)
-            print("  ℹ️ Usando método: upsert_normalized()")
-            result = client.upsert_normalized(todos)
-            print(f"  ✅ {result['inserted']} novos, {result['updated']} atualizados, {result['errors']} erros")
-            
-        elif hasattr(client, 'upsert'):
-            # Versão com tabelas separadas (antiga)
-            print("  ℹ️ Usando método: upsert('veiculos', items)")
-            result = client.upsert('veiculos', todos)
-            print(f"  ✅ {result['inserted']} novos, {result['updated']} atualizados, {result['errors']} erros")
-            
-        elif hasattr(client, 'insert_normalized'):
-            # Fallback para método antigo
-            print("  ℹ️ Usando método: insert_normalized()")
-            inserted = client.insert_normalized(todos)
-            print(f"  ✅ {inserted} itens processados")
-            
-        else:
-            print("  ⚠️ Nenhum método de upsert encontrado no SupabaseClient")
-            print("  📋 Métodos disponíveis:", [m for m in dir(client) if not m.startswith('_')])
-            
-    except ImportError:
-        print("\n⚠️ supabase_client.py não encontrado")
-        print("  ℹ️ Os dados foram salvos localmente em:", arquivo)
+        return unique
+    
+    def run(self):
+        """Executa scraping completo"""
+        print("="*60)
+        print("🚗 SCRAPER: VEICULOS - VERSÃO FINAL")
+        print("="*60)
         
-    except Exception as e:
-        print(f"\n❌ Erro Supabase: {e}")
-        print("  ℹ️ Os dados foram salvos localmente em:", arquivo)
+        start_time = time.time()
         
-        # Debug: mostra informações do erro
-        import traceback
-        print("\n🔍 Detalhes do erro:")
-        traceback.print_exc()
+        # Setup cookies
+        self.setup_global_cookies()
+        
+        # Scrape cada fonte
+        sodre_items = self.scrape_sodre()
+        self.items.extend(sodre_items)
+        print(f"✅ sodre: {len(sodre_items)} itens")
+        
+        megaleiloes_items = self.scrape_megaleiloes()
+        self.items.extend(megaleiloes_items)
+        print(f"✅ megaleiloes: {len(megaleiloes_items)} itens")
+        
+        superbid_items = self.scrape_superbid()
+        self.items.extend(superbid_items)
+        print(f"✅ superbid: {len(superbid_items)} itens")
+        
+        # Mostra resumo dos filtros SUPERBID
+        if self.stats['filtered_test_items'] > 0:
+            print(f"  🚫 TOTAL FILTRADO (SUPERBID): {self.stats['filtered_test_items']} ofertas de teste/demo")
+            details = self.stats['filter_details']
+            print(f"     • Sem loja (store_name NULL): {details['no_store']}")
+            print(f"     • Vendedor Demo: {details['demo_seller']}")
+            print(f"     • Leiloeiro Demo: {details['demo_auctioneer']}")
+            print(f"     • Texto 'deploy': {details['deploy_text']}")
+        
+        # Remove duplicatas
+        unique_items = self.deduplicate(self.items)
+        
+        # Salva JSON
+        filepath = self.save_json(unique_items)
+        print(f"💾 Salvo: {filepath}")
+        print(f"📊 Total: {len(unique_items)} itens únicos")
+        
+        # Upload para Supabase
+        self.upload_to_supabase(unique_items)
+        
+        elapsed = time.time() - start_time
+        minutes = int(elapsed // 60)
+        print("="*60)
+        print(f"✅ veiculos CONCLUÍDO em {minutes} minutos")
+        print(f"🕐 Término: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        print("="*60)
 
 
 if __name__ == "__main__":
-    main()
+    print("="*60)
+    print(f"📅 Início: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"🇧🇷 Horário Brasil: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} BRT")
+    print(f"📦 Fonte: all")
+    print("="*60)
+    
+    scraper = VeiculosScraper()
+    scraper.run()

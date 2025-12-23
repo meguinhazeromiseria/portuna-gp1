@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SUPABASE CLIENT - GRUPO 1 - CORRIGIDO"""
+"""SUPABASE CLIENT - CORRIGIDO PARA SCHEMA auctions"""
 
 import os
 import time
@@ -9,7 +9,7 @@ from datetime import datetime
 
 
 class SupabaseClient:
-    """Cliente para Supabase - Schema auctions.*"""
+    """Cliente para Supabase - Schema auctions (não public)"""
     
     def __init__(self):
         self.url = os.getenv('SUPABASE_URL')
@@ -20,10 +20,13 @@ class SupabaseClient:
         
         self.url = self.url.rstrip('/')
         
+        # 🔥 FIX: Adiciona Content-Profile para schema auctions
         self.headers = {
             'apikey': self.key,
             'Authorization': f'Bearer {self.key}',
             'Content-Type': 'application/json',
+            'Content-Profile': 'auctions',  # ← Define schema auctions
+            'Accept-Profile': 'auctions',   # ← Define schema auctions
             'Prefer': 'resolution=merge-duplicates,return=minimal'
         }
         
@@ -61,8 +64,8 @@ class SupabaseClient:
         batch_size = 500
         total_batches = (len(prepared) + batch_size - 1) // batch_size
         
-        # 🔥 FIX: Adiciona schema 'auctions' na URL
-        url = f"{self.url}/rest/v1/auctions.{tabela}"
+        # 🔥 FIX: URL sem schema (usa Content-Profile header)
+        url = f"{self.url}/rest/v1/{tabela}"
         
         for i in range(0, len(prepared), batch_size):
             batch = prepared[i:i+batch_size]
@@ -173,12 +176,14 @@ class SupabaseClient:
     def test(self) -> bool:
         """Testa conexão com Supabase"""
         try:
+            # Testa acesso ao schema auctions
             url = f"{self.url}/rest/v1/"
             r = self.session.get(url, timeout=10)
             
             if r.status_code == 200:
                 print("✅ Conexão com Supabase OK")
                 print(f"   URL: {self.url}")
+                print(f"   Schema: auctions")
                 return True
             else:
                 print(f"❌ Erro HTTP {r.status_code}")
@@ -196,7 +201,8 @@ class SupabaseClient:
     def get_stats(self, tabela: str) -> dict:
         """Retorna estatísticas da tabela"""
         try:
-            url = f"{self.url}/rest/v1/auctions.{tabela}"
+            # URL sem schema (usa Content-Profile header)
+            url = f"{self.url}/rest/v1/{tabela}"
             
             r = self.session.get(
                 url,
@@ -223,7 +229,7 @@ class SupabaseClient:
 
 if __name__ == "__main__":
     print("="*60)
-    print("🧪 TESTE DO SUPABASE CLIENT")
+    print("🧪 TESTE DO SUPABASE CLIENT (SCHEMA auctions)")
     print("="*60)
     
     try:
@@ -231,7 +237,7 @@ if __name__ == "__main__":
         
         if client.test():
             print("\n📊 Testando estatísticas...")
-            for tabela in ['veiculos', 'tecnologia', 'bens_consumo', 'eletrodomesticos']:
+            for tabela in ['veiculos', 'tecnologia', 'imoveis', 'eletrodomesticos']:
                 stats = client.get_stats(tabela)
                 print(f"  {tabela}: {stats['total']} registros")
         
