@@ -89,11 +89,11 @@ class VehicleDataNormalizer:
     
     def _get_display_title(self, item: dict) -> str:
         """
-        Título SIMPLES - pega o que já vem das fontes e só formata
+        Título SIMPLES - só primeira letra da FRASE maiúscula
         
-        Superbid: "LOTE 39 MOTO CG FAN 125..." → "Moto Cg Fan 125..."
-        Sodré: usa metadata → "Nissan Kicks Sense Cvt 22/23"
-        Megaleilões: extrai da descrição → "Carro Citroen Jumpy..."
+        Ex: "Moto cg fan 125 com carrocinha 2007"
+            "Nissan kicks sense cvt 23/23"
+            "Carro citroen jumpy furgão pk 2020/2021"
         """
         source = item.get('source', '')
         title = item.get('title', '')
@@ -109,15 +109,19 @@ class VehicleDataNormalizer:
             ano = veiculo.get('ano')
             
             if marca and modelo:
-                # Title case
-                marca_fmt = marca.title()
-                modelo_fmt = modelo.title()
+                # Minúsculo + primeira maiúscula
+                marca_fmt = marca.lower()
+                modelo_fmt = modelo.lower()
                 
                 if ano:
                     # Ano curto: 2023 → 23
                     ano_curto = str(ano)[-2:]
-                    return f"{marca_fmt} {modelo_fmt} {ano_curto}/{ano_curto}"
-                return f"{marca_fmt} {modelo_fmt}"
+                    result = f"{marca_fmt} {modelo_fmt} {ano_curto}/{ano_curto}"
+                else:
+                    result = f"{marca_fmt} {modelo_fmt}"
+                
+                # Primeira letra maiúscula
+                return result[0].upper() + result[1:] if result else "Veículo"
         
         # ========================================
         # MEGALEILÕES: Extrai da descrição
@@ -126,33 +130,30 @@ class VehicleDataNormalizer:
             description = item.get('description', '')
             
             # Padrão 1: "Carro/Caminhonete MARCA MODELO - YYYY/YYYY"
-            # Ex: "Carro Citroen Jumpy Furgão PK - 2020/2021"
             match = re.search(r'((?:Carro|Caminhonete|Moto|Motocicleta)\s+[A-ZÀ-Ú][A-Za-zÀ-ú0-9\s]+?)\s+-\s+(\d{4})/(\d{4})', description, re.IGNORECASE)
             if match:
                 vehicle_part = match.group(1).strip()
                 year1 = match.group(2)
                 year2 = match.group(3)
                 
-                # Title case
-                vehicle_fmt = vehicle_part.title()
-                
-                return f"{vehicle_fmt} {year1}/{year2}"
+                # Minúsculo + primeira maiúscula
+                result = f"{vehicle_part.lower()} {year1}/{year2}"
+                return result[0].upper() + result[1:]
             
-            # Padrão 2: Fallback - busca depois de números e código
-            # Ex: "763 0 Carro Citroen Jumpy Furgão PK - 2020/2021"
+            # Padrão 2: Fallback - busca depois de números
             match = re.search(r'\d+\s+\d+\s+((?:Carro|Caminhonete|Moto)\s+[A-Za-zÀ-ú0-9\s-]+?)\s+[A-Z]\d+', description, re.IGNORECASE)
             if match:
-                vehicle_text = match.group(1).strip()
-                return vehicle_text.title()
+                vehicle_text = match.group(1).strip().lower()
+                return vehicle_text[0].upper() + vehicle_text[1:]
             
-            # Padrão 3: Super fallback - pega qualquer MARCA conhecida
+            # Padrão 3: Super fallback - marca conhecida
             brands_pattern = r'(Ford|Fiat|Chevrolet|VW|Volkswagen|Renault|Honda|Toyota|Yamaha|Nissan|Hyundai|Citroen|Peugeot)'
             match = re.search(rf'((?:Carro|Caminhonete|Moto)\s+{brands_pattern}[A-Za-zÀ-ú0-9\s]+)', description, re.IGNORECASE)
             if match:
                 vehicle_text = match.group(0).strip()
-                # Remove código no final (J117804 etc)
                 vehicle_text = re.sub(r'\s+[A-Z]\d+.*$', '', vehicle_text)
-                return vehicle_text.title()
+                vehicle_text = vehicle_text.lower()
+                return vehicle_text[0].upper() + vehicle_text[1:]
         
         # ========================================
         # SUPERBID e outros: Limpa título
@@ -172,11 +173,19 @@ class VehicleDataNormalizer:
             # Remove "Placa FINAL X (UF)"
             clean_title = re.sub(r'\s*,?\s*Placa\s+FINAL\s+\d+\s*\([A-Z]{2}\)\s*,?', '', clean_title, flags=re.IGNORECASE)
             
+            # Remove underscores
+            clean_title = clean_title.replace('_', ' ')
+            
+            # Remove zeros à esquerda de números (exemplo: "03" → "3", "Fan 125" mantém)
+            clean_title = re.sub(r'\b0+(\d+)\b', r'\1', clean_title)
+            
             # Remove espaços duplicados
             clean_title = re.sub(r'\s+', ' ', clean_title).strip()
             
-            # Title case
-            clean_title = clean_title.title()
+            # Minúsculo + primeira maiúscula apenas
+            clean_title = clean_title.lower()
+            if clean_title:
+                clean_title = clean_title[0].upper() + clean_title[1:]
             
             # Trunca se muito longo
             if len(clean_title) > 120:

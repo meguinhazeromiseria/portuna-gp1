@@ -567,10 +567,7 @@ class VeiculosScraper:
     def _extract_megaleiloes_title(self, texto: str, external_id: str) -> str:
         """
         Extrai título real do Megaleilões
-        
-        Prioridade:
-        1. Descrição: "Carro Ford Ranger - 2014/2014"
-        2. External ID: "carro-ford-ranger-xl-20142014"
+        Apenas primeira letra maiúscula
         """
         # Padrão 1: "Carro/Caminhonete MARCA MODELO - YYYY/YYYY"
         match = re.search(r'((?:Carro|Caminhonete|Moto|Motocicleta)\s+[A-ZÀ-Ú][A-Za-zÀ-ú0-9\s]+?)\s+-\s+(\d{4})/(\d{4})', texto, re.IGNORECASE)
@@ -578,7 +575,8 @@ class VeiculosScraper:
             vehicle_part = match.group(1).strip()
             year1 = match.group(2)
             year2 = match.group(3)
-            return f"{vehicle_part} {year1}/{year2}"
+            result = f"{vehicle_part.lower()} {year1}/{year2}"
+            return result[0].upper() + result[1:]
         
         # Padrão 2: Busca marca conhecida
         brands_pattern = r'(Ford|Fiat|Chevrolet|VW|Volkswagen|Renault|Honda|Toyota|Yamaha|Nissan|Hyundai|Citroen|Peugeot)'
@@ -589,7 +587,13 @@ class VeiculosScraper:
             vehicle_text = re.sub(r'\s+[A-Z]\d+.*$', '', vehicle_text)
             # Remove "Lote X"
             vehicle_text = re.sub(r'\s+Lote\s+\d+.*$', '', vehicle_text, flags=re.IGNORECASE)
-            return vehicle_text
+            # Remove underscores
+            vehicle_text = vehicle_text.replace('_', ' ')
+            # Remove zeros à esquerda
+            vehicle_text = re.sub(r'\b0+(\d+)\b', r'\1', vehicle_text)
+            # Minúsculo + primeira maiúscula
+            vehicle_text = vehicle_text.lower()
+            return vehicle_text[0].upper() + vehicle_text[1:] if vehicle_text else "Veículo"
         
         # Fallback: extrai do external_id
         clean_id = external_id.replace('megaleiloes_', '')
@@ -603,8 +607,11 @@ class VeiculosScraper:
             year_text = f" {y1}/{y2}"
             clean_id = clean_id[:year_match.start()]
         
-        clean_id = clean_id.rstrip('-').replace('-', ' ')
-        return f"{clean_id}{year_text}".strip() or "Veículo"
+        clean_id = clean_id.rstrip('-').replace('-', ' ').replace('_', ' ')
+        # Remove zeros à esquerda
+        clean_id = re.sub(r'\b0+(\d+)\b', r'\1', clean_id)
+        result = f"{clean_id}{year_text}".strip().lower()
+        return result[0].upper() + result[1:] if result else "Veículo"
     
     # ============================================================
     # SUPERBID
