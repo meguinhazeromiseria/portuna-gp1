@@ -88,77 +88,137 @@ class VehicleDataNormalizer:
         }
     
     def _get_display_title(self, item: dict) -> str:
-        """Cria título elegante - MARCA MODELO - ANO/ANO"""
+        """
+        Cria título elegante e uniforme
+        PADRÃO: Primeira letra maiúscula, resto minúscula
+        FORMATO: "Ford Ranger Xl 2014/2014"
+        """
         source = item.get('source', '')
         title = item.get('title', '')
         metadata = item.get('metadata', {})
         
-        # Sodré: metadata estruturado
+        # === Sodré: Usa metadata estruturado ===
         if source == 'sodre' and 'veiculo' in metadata:
             veiculo = metadata['veiculo']
-            marca = (veiculo.get('marca') or '').upper()
-            modelo = (veiculo.get('modelo') or '').upper()
+            marca = (veiculo.get('marca') or '').strip()
+            modelo = (veiculo.get('modelo') or '').strip()
             ano = veiculo.get('ano')
             
             if marca and modelo:
+                # Title case: primeira maiúscula de cada palavra
+                marca_fmt = marca.title()
+                modelo_fmt = modelo.title()
+                
                 if ano:
-                    return f"{marca} {modelo} - {ano}/{ano}"
-                return f"{marca} {modelo}"
+                    return f"{marca_fmt} {modelo_fmt} {ano}/{ano}"
+                return f"{marca_fmt} {modelo_fmt}"
         
-        # Título existente
+        # === Megaleilões: Extrai do external_id ===
+        if source == 'megaleiloes':
+            external_id = item.get('external_id', '')
+            description = item.get('description', '')
+            
+            # Tenta extrair da descrição primeiro (mais limpo)
+            # Ex: "Caminhonete Ford Ranger XL CD4 22H - 2014/2014"
+            desc_match = re.search(r'([A-Za-zÀ-ú\s]+(?:Ford|Fiat|Chevrolet|VW|Volkswagen|Renault|Honda|Toyota|Yamaha|Suzuki)[A-Za-z0-9\s\.\-]+?)\s*-?\s*(\d{4})/(\d{4})', description)
+            if desc_match:
+                vehicle_part = desc_match.group(1).strip()
+                year1 = desc_match.group(2)
+                year2 = desc_match.group(3)
+                # Title case
+                vehicle_fmt = vehicle_part.title()
+                return f"{vehicle_fmt} {year1}/{year2}"
+            
+            # Fallback: extrai do external_id
+            # Remove prefixo "megaleiloes_"
+            clean_id = external_id.replace('megaleiloes_', '')
+            
+            # Padrão: "caminhonete-ford-ranger-xl-cd4-22h-20142014-lote-38-x118437"
+            # Remove lote-XX-XXXXX do final
+            clean_id = re.sub(r'-lote-\d+-[a-z]\d+$', '', clean_id, flags=re.IGNORECASE)
+            
+            # Extrai ano duplicado (20142014 → 2014/2014)
+            year_match = re.search(r'(\d{4})(\d{4})$', clean_id)
+            year_text = ""
+            if year_match:
+                y1, y2 = year_match.groups()
+                year_text = f" {y1}/{y2}"
+                # Remove do clean_id
+                clean_id = clean_id[:year_match.start()]
+            
+            # Remove hífens finais soltos
+            clean_id = clean_id.rstrip('-')
+            
+            # Substitui hífens por espaços
+            clean_id = clean_id.replace('-', ' ')
+            
+            # Title case (primeira maiúscula de cada palavra)
+            title_parts = clean_id.split()
+            title_formatted = ' '.join(word.capitalize() for word in title_parts)
+            
+            return f"{title_formatted}{year_text}".strip()
+        
+        # === Superbid e outros: Limpa e formata título ===
         if title and title != "Sem título" and len(title) > 10:
+            # Remove HTML tags
             clean_title = re.sub(r'<[^>]+>', '', title)
             clean_title = clean_title.strip()
             
+            # Remove vírgulas, dois pontos, ponto e vírgula
+            clean_title = clean_title.replace(',', '').replace(':', '').replace(';', '')
+            
+            # Remove "Placa FINAL X" do meio do título
+            clean_title = re.sub(r'\s*Placa\s+FINAL\s+\d+\s*\([A-Z]{2}\)\s*', ' ', clean_title, flags=re.IGNORECASE)
+            clean_title = re.sub(r'\s*Placa\s+FINAL\s+\d+\s*', ' ', clean_title, flags=re.IGNORECASE)
+            
+            # Remove espaços duplicados
+            clean_title = re.sub(r'\s+', ' ', clean_title)
+            
+            # Title case: primeira maiúscula de cada palavra
+            clean_title = clean_title.title()
+            
+            # Trunca se muito longo
             if len(clean_title) > 120:
                 clean_title = clean_title[:117] + '...'
             
-            return clean_title
+            return clean_title.strip()
         
-        # Fallback
-        desc = item.get('description', '')
-        if desc:
-            match = re.search(r'([A-Z]+)\s+([A-Z0-9\.\s\-]+)', desc)
-            if match:
-                brand = match.group(1)
-                model = match.group(2)[:40]
-                return f"{brand} {model}".strip()
-        
+        # === Fallback ===
         return "Veículo"
     
     def _get_brand(self, item: dict) -> Optional[str]:
-        """Extrai marca"""
+        """Extrai marca - title case"""
         metadata = item.get('metadata', {})
         
         if 'veiculo' in metadata:
             marca = metadata['veiculo'].get('marca')
             if marca:
-                return marca.upper()
+                return marca.strip().title()
         
         text = f"{item.get('title', '')} {item.get('description', '')}".upper()
         
         for brand in self.KNOWN_BRANDS:
             if brand in text:
-                return brand
+                return brand.title()
         
         return None
     
     def _get_model(self, item: dict) -> Optional[str]:
-        """Extrai modelo"""
+        """Extrai modelo - title case"""
         metadata = item.get('metadata', {})
         
         if 'veiculo' in metadata:
             modelo = metadata['veiculo'].get('modelo')
             if modelo:
-                return modelo.upper()
+                return modelo.strip().title()
         
         brand = self._get_brand(item)
         if brand:
             title = item.get('title', '').upper()
-            model_part = title.replace(brand, '').strip()
+            model_part = title.replace(brand.upper(), '').strip()
             words = model_part.split()[:4]
             if words:
-                return ' '.join(words)
+                return ' '.join(word.capitalize() for word in words)
         
         return None
     
@@ -185,20 +245,23 @@ class VehicleDataNormalizer:
         return None
     
     def _get_plate(self, item: dict) -> Optional[str]:
-        """Extrai placa"""
+        """Extrai placa - formatada"""
         metadata = item.get('metadata', {})
         
         if 'veiculo' in metadata:
             placa = metadata['veiculo'].get('placa')
             if placa:
-                return placa.upper()
+                # Formata: "FINAL 7" → "Final 7"
+                return placa.strip().title()
         
         text = f"{item.get('title', '')} {item.get('description', '')}".upper()
         
+        # Padrão: ABC-1234 ou ABC1D23
         match = re.search(r'\b([A-Z]{3}[-\s]?\d[A-Z0-9]\d{2})\b', text)
         if match:
-            return match.group(1).replace(' ', '')
+            return match.group(1).replace(' ', '').upper()  # Placa fica maiúscula
         
+        # Padrão: "final 7" → "Final 7"
         match = re.search(r'final\s+(\d)', text.lower())
         if match:
             return f"Final {match.group(1)}"
