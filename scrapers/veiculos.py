@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SCRAPER VEÍCULOS - VERSÃO FINAL CORRIGIDA
-- Upload em batches (100 por vez)
-- Apenas categorias específicas do Superbid
-- Filtro de oportunidades por TIPO de produto (não marca)
+SCRAPER VEÍCULOS - COMPLETO
+Megaleilões + Superbid + Sodré Santoro
 """
 
 import os
@@ -19,12 +17,13 @@ from typing import Dict, List, Optional, Tuple
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
-# Importa o cliente Supabase
+# Importa cliente Supabase e normalizador
 from supabase_client import SupabaseClient
+from veiculosnormalizer import normalize_vehicles
 
 
 class VeiculosScraper:
-    """Scraper unificado para Megaleilões, Superbid e Sodré Santoro - CATEGORIA VEÍCULOS"""
+    """Scraper unificado para veículos"""
     
     def __init__(self):
         self.session = requests.Session()
@@ -50,7 +49,6 @@ class VeiculosScraper:
             }
         }
         
-        # Termos de teste/demo
         self.test_patterns = [
             r'\bdemo\b',
             r'\bteste\b',
@@ -62,25 +60,18 @@ class VeiculosScraper:
         
         self.compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.test_patterns]
         
-        # ✅ FILTRO POR TIPO DE PRODUTO (mobilidade pessoal)
-        # Não inclui marcas, apenas tipos/categorias
+        # Palavras-chave mobilidade (só tipo, não marca)
         self.mobility_types = [
-            # Bicicletas
             'bicicleta', 'bike', 'velocípede',
             'e-bike', 'bike elétrica', 'bike eletrica',
             'mountain bike', 'speed', 'bmx',
-            
-            # Mobilidade elétrica pessoal
             'patinete', 'patinete elétrico', 'patinete eletrico',
             'patins', 'skate', 'longboard',
             'segway', 'hoverboard', 'monowheel',
-            
-            # Quadriciclos e similares
-            'quadriciclo', 'quadriciclo', 'triciclo',
+            'quadriciclo', 'triciclo',
             'ciclomotor', 'motoneta',
         ]
         
-        # Cookies da Sodré
         self.sodre_cookies = {}
     
     def is_test_item(self, item: dict) -> tuple[bool, str]:
@@ -109,10 +100,7 @@ class VeiculosScraper:
         return False, ''
     
     def is_mobility_vehicle(self, title: str, description: str = '') -> bool:
-        """
-        Verifica se é veículo de mobilidade pessoal por TIPO
-        (não por marca - evita pegar eletrônicos Xiaomi etc)
-        """
+        """Verifica se é mobilidade pessoal por TIPO"""
         text = f"{title} {description}".lower()
         return any(mobility_type in text for mobility_type in self.mobility_types)
     
@@ -172,7 +160,10 @@ class VeiculosScraper:
             return {}
     
     def scrape_sodre(self) -> List[dict]:
-        """Scrape Sodré Santoro"""
+        """
+        Scrape Sodré Santoro
+        ✅ PAGINAÇÃO CORRIGIDA - Pega todos os veículos
+        """
         print("🔵 SODRÉ SANTORO")
         items = []
         
@@ -197,7 +188,9 @@ class VeiculosScraper:
         try:
             page = 0
             page_num = 1
+            total_reported = None
             
+            # ✅ Loop até não retornar mais resultados
             while True:
                 payload = {
                     "indices": indices,
@@ -237,7 +230,13 @@ class VeiculosScraper:
                 results = data.get('results', [])
                 total = data.get('total', 0)
                 
+                # Guarda total da primeira chamada
+                if total_reported is None:
+                    total_reported = total
+                
+                # Para quando não há mais resultados
                 if not results:
+                    print(f"  ✅ Fim: página {page_num} vazia")
                     break
                 
                 for lot in results:
@@ -245,9 +244,11 @@ class VeiculosScraper:
                     if cleaned:
                         items.append(cleaned)
                 
-                print(f"  Pág {page_num}: +{len(results)} | Total: {len(items)}/{total}")
+                print(f"  Pág {page_num}: +{len(results)} | Total: {len(items)}/{total_reported}")
                 
-                if len(items) >= total:
+                # Para se pegou menos de 100 (última página)
+                if len(results) < 100:
+                    print(f"  ✅ Última página (retornou {len(results)} itens)")
                     break
                 
                 page += 100
@@ -356,7 +357,6 @@ class VeiculosScraper:
                         'placa': lot.get('lot_plate'),
                         'ano': lot.get('lot_year_model'),
                     },
-                    'imagens': lot.get('lot_pictures', []),
                 }
             }
         except Exception as e:
@@ -494,7 +494,7 @@ class VeiculosScraper:
         return items
     
     def _extract_megaleiloes_card(self, card) -> Optional[dict]:
-        """Extrai dados do card do Megaleilões"""
+        """Extrai dados do card"""
         try:
             link_elem = card.select_one('a[href]')
             if not link_elem:
@@ -571,21 +571,14 @@ class VeiculosScraper:
             return None
     
     # ============================================================
-    # SUPERBID - CATEGORIAS ESPECÍFICAS
+    # SUPERBID
     # ============================================================
     
     def scrape_superbid(self) -> List[dict]:
-        """
-        Scrape Superbid - APENAS categorias específicas:
-        - carros-motos
-        - caminhoes-onibus
-        - embarcacoes-aeronaves
-        - oportunidades (filtrado)
-        """
+        """Scrape Superbid - 4 categorias"""
         print("🔴 SUPERBID")
         items = []
         
-        # ✅ APENAS as 4 categorias solicitadas
         categories = [
             ('carros-motos', 'Carros e Motos'),
             ('caminhoes-onibus', 'Caminhões e Ônibus'),
@@ -694,12 +687,8 @@ class VeiculosScraper:
         return items
     
     def scrape_superbid_oportunidades(self) -> List[dict]:
-        """
-        Scrape Superbid Oportunidades
-        ✅ FILTRO POR TIPO: bicicleta, quadriciclo, patins, patinete
-        ❌ NÃO por marca (Xiaomi, etc)
-        """
-        print("🔴 SUPERBID - Oportunidades (mobilidade pessoal)")
+        """Scrape Superbid Oportunidades - filtrado"""
+        print("🔴 SUPERBID - Oportunidades (mobilidade)")
         items = []
         
         headers = {
@@ -761,7 +750,6 @@ class VeiculosScraper:
                                 title = cleaned.get('title', '')
                                 desc = cleaned.get('description', '')
                                 
-                                # ✅ Verifica se é mobilidade pessoal por TIPO
                                 if self.is_mobility_vehicle(title, desc):
                                     is_test, reason = self.is_test_item(cleaned)
                                     if not is_test:
@@ -801,7 +789,7 @@ class VeiculosScraper:
                         break
                     time.sleep(5)
             
-            print(f"    ✅ {mobility_count} itens de mobilidade (filtrou {filtered_count} outros)\n")
+            print(f"    ✅ {mobility_count} itens (filtrou {filtered_count} outros)\n")
         
         except Exception as e:
             print(f"  ❌ Erro geral: {e}")
@@ -810,7 +798,7 @@ class VeiculosScraper:
         return items
     
     def _clean_superbid_offer(self, offer: dict, category_slug: str) -> Optional[dict]:
-        """Limpa oferta do Superbid"""
+        """Limpa oferta Superbid"""
         try:
             product = offer.get("product", {})
             auction = offer.get("auction", {})
@@ -892,19 +880,17 @@ class VeiculosScraper:
     # ============================================================
     
     def _normalize_title(self, title: str) -> str:
-        """Normaliza título para busca"""
+        """Normaliza título"""
         if not title:
             return ''
-        
         title = title.lower()
         title = re.sub(r'[^\w\s]', ' ', title)
         title = re.sub(r'\s+', ' ', title)
         return title.strip()
     
     def save_json(self, items: List[dict], output_dir: str = 'veiculos_data') -> str:
-        """Salva dados em JSON"""
+        """Salva JSON"""
         Path(output_dir).mkdir(exist_ok=True)
-        
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filepath = f"{output_dir}/veiculos_{timestamp}.json"
         
@@ -914,10 +900,7 @@ class VeiculosScraper:
         return filepath
     
     def upload_to_supabase_batch(self, items: List[dict], batch_size: int = 100):
-        """
-        ✅ UPLOAD EM BATCHES (partes)
-        Envia 100 itens por vez para não sobrecarregar
-        """
+        """Upload em batches"""
         print(f"\n📤 Enviando para Supabase em batches de {batch_size}...")
         
         if not items:
@@ -950,7 +933,6 @@ class VeiculosScraper:
                     
                     print(f"✅ +{stats['inserted']} novos, {stats['updated']} atualizados")
                     
-                    # Pequeno delay entre batches
                     if batch_num < total_batches:
                         time.sleep(0.5)
                     
@@ -960,16 +942,11 @@ class VeiculosScraper:
             
             print(f"\n  ✅ TOTAL: {total_inserted} novos, {total_updated} atualizados, {total_errors} erros")
             
-            if total_errors > 0:
-                print(f"  ⚠️ {total_errors} itens falharam")
-                
         except Exception as e:
             print(f"  ❌ Erro geral: {e}")
-            import traceback
-            traceback.print_exc()
     
     def deduplicate(self, items: List[dict]) -> List[dict]:
-        """Remove duplicatas baseado em source + external_id"""
+        """Remove duplicatas"""
         seen = set()
         unique = []
         
@@ -984,12 +961,12 @@ class VeiculosScraper:
     def run(self):
         """Executa scraping completo"""
         print("="*60)
-        print("🚗 SCRAPER: VEICULOS - VERSÃO CORRIGIDA")
+        print("🚗 SCRAPER: VEICULOS")
         print("="*60)
         
         start_time = time.time()
         
-        # Scrape cada fonte
+        # Scrape
         sodre_items = self.scrape_sodre()
         self.items.extend(sodre_items)
         print(f"✅ Sodré: {len(sodre_items)} itens\n")
@@ -1006,9 +983,9 @@ class VeiculosScraper:
         self.items.extend(oportunidades_items)
         print(f"✅ Superbid Oportunidades: {len(oportunidades_items)} itens\n")
         
-        # Mostra filtros
+        # Filtros
         if self.stats['filtered_test_items'] > 0:
-            print(f"🚫 TOTAL FILTRADO: {self.stats['filtered_test_items']} ofertas de teste/demo")
+            print(f"🚫 FILTRADO: {self.stats['filtered_test_items']} itens teste/demo")
             details = self.stats['filter_details']
             if details['no_store'] > 0:
                 print(f"   • Sem loja: {details['no_store']}")
@@ -1022,11 +999,11 @@ class VeiculosScraper:
                 print(f"   • Texto 'test/demo': {details['test_text']}")
             print()
         
-        # Remove duplicatas
+        # Deduplica
         unique_items = self.deduplicate(self.items)
         
         # Resumo
-        print("📊 RESUMO POR FONTE:")
+        print("📊 RESUMO:")
         print(f"   • Sodré: {self.stats['sodre']}")
         print(f"   • Megaleilões: {self.stats['megaleiloes']}")
         print(f"   • Superbid: {self.stats['superbid']}")
@@ -1038,7 +1015,20 @@ class VeiculosScraper:
         filepath = self.save_json(unique_items)
         print(f"💾 Salvo: {filepath}")
         
-        # ✅ Upload em batches de 100
+        # ✨ Normaliza e salva
+        print("✨ Normalizando dados...")
+        normalized_items = normalize_vehicles(unique_items)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        norm_filepath = f"veiculos_data/veiculos_normalized_{timestamp}.json"
+        Path('veiculos_data').mkdir(exist_ok=True)
+        
+        with open(norm_filepath, 'w', encoding='utf-8') as f:
+            json.dump(normalized_items, f, ensure_ascii=False, indent=2)
+        
+        print(f"✨ Normalizado: {norm_filepath}")
+        
+        # Upload
         self.upload_to_supabase_batch(unique_items, batch_size=100)
         
         elapsed = time.time() - start_time
