@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 SCRAPER VEÍCULOS - VERSÃO FINAL CORRIGIDA
-- Bug test_text RESOLVIDO
-- Categorias expandidas (patinetes, patins, quadriciclos, etc.)
-- Melhor tratamento de erros Supabase
+- Upload em batches (100 por vez)
+- Apenas categorias específicas do Superbid
+- Filtro de oportunidades por TIPO de produto (não marca)
 """
 
 import os
@@ -50,7 +50,7 @@ class VeiculosScraper:
             }
         }
         
-        # Lista de termos que indicam itens de teste/demo
+        # Termos de teste/demo
         self.test_patterns = [
             r'\bdemo\b',
             r'\bteste\b',
@@ -62,87 +62,41 @@ class VeiculosScraper:
         
         self.compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.test_patterns]
         
-        # ✨ CATEGORIAS EXPANDIDAS - Qualquer meio de transporte/mobilidade
-        self.vehicle_keywords = [
-            # Carros e derivados
-            'carro', 'celta', 'gol', 'uno', 'palio', 'corsa', 'fiesta', 'ka',
-            'sedan', 'hatch', 'suv', 'crossover', 'picape', 'pickup',
-            'automóvel', 'automovel', 'veículo', 'veiculo',
+        # ✅ FILTRO POR TIPO DE PRODUTO (mobilidade pessoal)
+        # Não inclui marcas, apenas tipos/categorias
+        self.mobility_types = [
+            # Bicicletas
+            'bicicleta', 'bike', 'velocípede',
+            'e-bike', 'bike elétrica', 'bike eletrica',
+            'mountain bike', 'speed', 'bmx',
             
-            # Motos e similares
-            'moto', 'motocicleta', 'ciclomotor', 'motoneta', 'scooter', 'lambreta',
-            'quadriciclo', 'quadriciclo', 'triciclo', 'moped',
+            # Mobilidade elétrica pessoal
+            'patinete', 'patinete elétrico', 'patinete eletrico',
+            'patins', 'skate', 'longboard',
+            'segway', 'hoverboard', 'monowheel',
             
-            # Mobilidade urbana/elétrica
-            'patinete', 'patins', 'skate', 'bike', 'bicicleta', 'velocípede',
-            'segway', 'hoverboard', 'monowheel', 'elétrica', 'eletrica',
-            'bike elétrica', 'bike eletrica', 'e-bike', 'ebike',
-            'patinete elétrico', 'patinete eletrico',
-            
-            # Caminhões e veículos pesados
-            'caminhão', 'caminhao', 'carreta', 'reboque', 'truck',
-            'bitruck', 'rodotrem', 'semi-reboque', 'semi reboque',
-            'caminhonete', 'camioneta',
-            
-            # Ônibus e vans
-            'ônibus', 'onibus', 'micro-ônibus', 'micro onibus', 'microonibus',
-            'van', 'kombi', 'van executiva', 'van escolar',
-            'furgão', 'furgao', 'ambulância', 'ambulancia',
-            
-            # Utilitários
-            'utilitário', 'utilitario', 'trator', 'empilhadeira',
-            'retroescavadeira', 'pá carregadeira', 'pa carregadeira',
-            
-            # Partes e características
-            'placa', 'chassi', 'chassis', 'motor', 'rodas',
-            'km', 'quilometragem', 'kilometragem',
-            
-            # Marcas de carros
-            'toyota', 'volkswagen', 'vw', 'ford', 'chevrolet', 'chevy',
-            'fiat', 'renault', 'nissan', 'hyundai', 'honda', 'jeep',
-            'bmw', 'mercedes', 'mercedes-benz', 'audi', 'volvo', 'peugeot',
-            'citroën', 'citroen', 'mitsubishi', 'suzuki', 'kia', 'mazda',
-            'subaru', 'land rover', 'porsche', 'ferrari', 'lamborghini',
-            'chery', 'caoa', 'jac', 'byd', 'gwm', 'lifan',
-            
-            # Marcas de motos
-            'yamaha', 'suzuki', 'kawasaki', 'ducati', 'harley', 'harley-davidson',
-            'triumph', 'bmw motorrad', 'ktm', 'royal enfield', 'indian',
-            'shineray', 'dafra', 'traxx', 'bull', 'kasinski',
-            
-            # Marcas de caminhões
-            'scania', 'volvo', 'mercedes-benz', 'volkswagen caminhões',
-            'iveco', 'man', 'daf', 'ford cargo',
-            
-            # Marcas de mobilidade elétrica
-            'xiaomi', 'ninebot', 'segway', 'foston', 'two dogs',
-            'atrio', 'multilaser', 'grin', 'yellow',
+            # Quadriciclos e similares
+            'quadriciclo', 'quadriciclo', 'triciclo',
+            'ciclomotor', 'motoneta',
         ]
         
         # Cookies da Sodré
         self.sodre_cookies = {}
     
     def is_test_item(self, item: dict) -> tuple[bool, str]:
-        """
-        Verifica se um item é de teste/demo
-        Returns: (is_test, reason)
-        """
-        # 1. Sem loja (store_name null/vazio) = geralmente teste
+        """Verifica se é teste/demo"""
         store = item.get('store_name')
         if not store or not str(store).strip():
             return True, 'no_store'
         
-        # 2. Verifica vendedor/leiloeiro
         seller = str(item.get('store_name', '')).lower()
         auctioneer = str(item.get('auction_name', '')).lower()
         
         if 'demo' in seller:
             return True, 'demo_seller'
-        
         if 'demo' in auctioneer:
             return True, 'demo_auctioneer'
         
-        # 3. Verifica título e descrição
         title = str(item.get('title', '')).lower()
         desc = str(item.get('description_preview', '')).lower()
         
@@ -154,19 +108,20 @@ class VeiculosScraper:
         
         return False, ''
     
-    def is_vehicle(self, title: str, description: str = '') -> bool:
+    def is_mobility_vehicle(self, title: str, description: str = '') -> bool:
         """
-        Verifica se um item é um veículo/meio de transporte
+        Verifica se é veículo de mobilidade pessoal por TIPO
+        (não por marca - evita pegar eletrônicos Xiaomi etc)
         """
         text = f"{title} {description}".lower()
-        return any(keyword in text for keyword in self.vehicle_keywords)
+        return any(mobility_type in text for mobility_type in self.mobility_types)
     
     # ============================================================
     # SODRÉ SANTORO
     # ============================================================
     
     def get_sodre_cookies(self) -> dict:
-        """Captura cookies da Sodré usando Playwright"""
+        """Captura cookies da Sodré"""
         print("  🍪 Capturando cookies Sodré...")
         try:
             with sync_playwright() as p:
@@ -616,17 +571,25 @@ class VeiculosScraper:
             return None
     
     # ============================================================
-    # SUPERBID - CATEGORIAS + OPORTUNIDADES
+    # SUPERBID - CATEGORIAS ESPECÍFICAS
     # ============================================================
     
     def scrape_superbid(self) -> List[dict]:
-        """Scrape Superbid - Categorias específicas"""
-        print("🔴 SUPERBID - Categorias")
+        """
+        Scrape Superbid - APENAS categorias específicas:
+        - carros-motos
+        - caminhoes-onibus
+        - embarcacoes-aeronaves
+        - oportunidades (filtrado)
+        """
+        print("🔴 SUPERBID")
         items = []
         
+        # ✅ APENAS as 4 categorias solicitadas
         categories = [
-            ('carros-motos', 1),
-            ('caminhoes-onibus', 801)
+            ('carros-motos', 'Carros e Motos'),
+            ('caminhoes-onibus', 'Caminhões e Ônibus'),
+            ('embarcacoes-aeronaves', 'Embarcações e Aeronaves'),
         ]
         
         headers = {
@@ -638,8 +601,8 @@ class VeiculosScraper:
         }
         
         try:
-            for cat_slug, cat_id in categories:
-                print(f"  📦 {cat_slug}")
+            for cat_slug, cat_name in categories:
+                print(f"  📦 {cat_name}")
                 items_before = len(items)
                 
                 page = 1
@@ -682,7 +645,6 @@ class VeiculosScraper:
                             print(f"    ✅ Fim: página {page} vazia")
                             break
                         
-                        # ✅ FIX DEFINITIVO: Try-except INDIVIDUAL para cada oferta
                         valid_count = 0
                         for offer in offers:
                             try:
@@ -696,7 +658,6 @@ class VeiculosScraper:
                                         self.stats['filtered_test_items'] += 1
                                         self.stats['filter_details'][reason] += 1
                             except Exception:
-                                # Silenciosamente ignora erro individual
                                 pass
                         
                         print(f"    Pág {page}: +{valid_count} | Total: {len(items)}")
@@ -724,7 +685,7 @@ class VeiculosScraper:
                         time.sleep(5)
                 
                 cat_items = len(items) - items_before
-                print(f"    ✅ {cat_items} itens em {cat_slug}")
+                print(f"    ✅ {cat_items} itens em {cat_name}\n")
         
         except Exception as e:
             print(f"  ❌ Erro geral: {e}")
@@ -734,9 +695,11 @@ class VeiculosScraper:
     
     def scrape_superbid_oportunidades(self) -> List[dict]:
         """
-        Scrape Superbid Oportunidades - Filtra veículos e mobilidade
+        Scrape Superbid Oportunidades
+        ✅ FILTRO POR TIPO: bicicleta, quadriciclo, patins, patinete
+        ❌ NÃO por marca (Xiaomi, etc)
         """
-        print("🔴 SUPERBID - Oportunidades")
+        print("🔴 SUPERBID - Oportunidades (mobilidade pessoal)")
         items = []
         
         headers = {
@@ -750,13 +713,13 @@ class VeiculosScraper:
         try:
             page = 1
             consecutive_errors = 0
-            vehicle_count = 0
+            mobility_count = 0
             filtered_count = 0
             
             while page <= 100:
                 url = "https://offer-query.superbid.net/seo/offers/"
                 params = {
-                    "urlSeo": "https://exchange.superbid.net/oportunidades",
+                    "urlSeo": "https://exchange.superbid.net/categorias/oportunidades",
                     "locale": "pt_BR",
                     "orderBy": "offerDetail.percentDiffReservedPriceOverFipePrice:asc",
                     "pageNumber": page,
@@ -790,7 +753,6 @@ class VeiculosScraper:
                         print(f"    ✅ Fim: página {page} vazia")
                         break
                     
-                    # Processa cada oferta
                     valid_count = 0
                     for offer in offers:
                         try:
@@ -799,13 +761,13 @@ class VeiculosScraper:
                                 title = cleaned.get('title', '')
                                 desc = cleaned.get('description', '')
                                 
-                                # Verifica se é veículo/mobilidade
-                                if self.is_vehicle(title, desc):
+                                # ✅ Verifica se é mobilidade pessoal por TIPO
+                                if self.is_mobility_vehicle(title, desc):
                                     is_test, reason = self.is_test_item(cleaned)
                                     if not is_test:
                                         items.append(cleaned)
                                         valid_count += 1
-                                        vehicle_count += 1
+                                        mobility_count += 1
                                     else:
                                         self.stats['filtered_test_items'] += 1
                                         self.stats['filter_details'][reason] += 1
@@ -814,8 +776,8 @@ class VeiculosScraper:
                         except Exception:
                             pass
                     
-                    if valid_count > 0 or filtered_count > 0:
-                        print(f"    Pág {page}: +{valid_count} veículos ({filtered_count} outros) | Total: {len(items)}")
+                    if valid_count > 0:
+                        print(f"    Pág {page}: +{valid_count} mobilidade | Total: {len(items)}")
                     
                     if len(offers) < 10:
                         print(f"    ✅ Última página")
@@ -839,7 +801,7 @@ class VeiculosScraper:
                         break
                     time.sleep(5)
             
-            print(f"    ✅ {vehicle_count} veículos encontrados (filtrou {filtered_count} não-veículos)")
+            print(f"    ✅ {mobility_count} itens de mobilidade (filtrou {filtered_count} outros)\n")
         
         except Exception as e:
             print(f"  ❌ Erro geral: {e}")
@@ -951,9 +913,12 @@ class VeiculosScraper:
         
         return filepath
     
-    def upload_to_supabase(self, items: List[dict]):
-        """Upload para Supabase com melhor tratamento de erros"""
-        print("\n📤 Enviando para Supabase (auctions.veiculos)...")
+    def upload_to_supabase_batch(self, items: List[dict], batch_size: int = 100):
+        """
+        ✅ UPLOAD EM BATCHES (partes)
+        Envia 100 itens por vez para não sobrecarregar
+        """
+        print(f"\n📤 Enviando para Supabase em batches de {batch_size}...")
         
         if not items:
             print("  ⚠️ Nenhum item para enviar")
@@ -963,25 +928,43 @@ class VeiculosScraper:
             client = SupabaseClient()
             table_name = 'veiculos'
             
-            stats = client.upsert(table_name, items)
+            total_items = len(items)
+            total_batches = (total_items + batch_size - 1) // batch_size
             
-            print(f"  ✅ {stats['inserted']} novos, {stats['updated']} atualizados, {stats['errors']} erros")
+            total_inserted = 0
+            total_updated = 0
+            total_errors = 0
             
-            if stats['errors'] > 0:
-                print(f"\n  ⚠️ ATENÇÃO: {stats['errors']} itens falharam")
-                print(f"  💡 Se erro de permissão, execute: fix_supabase_permissions.sql")
+            for i in range(0, total_items, batch_size):
+                batch = items[i:i + batch_size]
+                batch_num = (i // batch_size) + 1
+                
+                print(f"  📦 Batch {batch_num}/{total_batches} ({len(batch)} itens)...", end=' ')
+                
+                try:
+                    stats = client.upsert(table_name, batch)
+                    
+                    total_inserted += stats['inserted']
+                    total_updated += stats['updated']
+                    total_errors += stats['errors']
+                    
+                    print(f"✅ +{stats['inserted']} novos, {stats['updated']} atualizados")
+                    
+                    # Pequeno delay entre batches
+                    if batch_num < total_batches:
+                        time.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"❌ Erro: {str(e)[:100]}")
+                    total_errors += len(batch)
+            
+            print(f"\n  ✅ TOTAL: {total_inserted} novos, {total_updated} atualizados, {total_errors} erros")
+            
+            if total_errors > 0:
+                print(f"  ⚠️ {total_errors} itens falharam")
                 
         except Exception as e:
-            error_msg = str(e)
-            print(f"  ❌ Erro ao enviar: {error_msg}")
-            
-            if 'permission denied' in error_msg.lower():
-                print(f"\n  🔧 SOLUÇÃO:")
-                print(f"     1. Execute o script: fix_supabase_permissions.sql no Supabase")
-                print(f"     2. Ou execute manualmente:")
-                print(f"        GRANT USAGE ON SCHEMA auctions TO anon, authenticated, service_role;")
-                print(f"        GRANT ALL ON auctions.veiculos TO anon, authenticated, service_role;")
-            
+            print(f"  ❌ Erro geral: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1001,7 +984,7 @@ class VeiculosScraper:
     def run(self):
         """Executa scraping completo"""
         print("="*60)
-        print("🚗 SCRAPER: VEICULOS - VERSÃO FINAL")
+        print("🚗 SCRAPER: VEICULOS - VERSÃO CORRIGIDA")
         print("="*60)
         
         start_time = time.time()
@@ -1017,13 +1000,13 @@ class VeiculosScraper:
         
         superbid_items = self.scrape_superbid()
         self.items.extend(superbid_items)
-        print(f"✅ Superbid (categorias): {len(superbid_items)} itens\n")
+        print(f"✅ Superbid: {len(superbid_items)} itens\n")
         
         oportunidades_items = self.scrape_superbid_oportunidades()
         self.items.extend(oportunidades_items)
-        print(f"✅ Superbid (oportunidades): {len(oportunidades_items)} itens\n")
+        print(f"✅ Superbid Oportunidades: {len(oportunidades_items)} itens\n")
         
-        # Mostra resumo dos filtros
+        # Mostra filtros
         if self.stats['filtered_test_items'] > 0:
             print(f"🚫 TOTAL FILTRADO: {self.stats['filtered_test_items']} ofertas de teste/demo")
             details = self.stats['filter_details']
@@ -1042,12 +1025,12 @@ class VeiculosScraper:
         # Remove duplicatas
         unique_items = self.deduplicate(self.items)
         
-        # Resumo por fonte
+        # Resumo
         print("📊 RESUMO POR FONTE:")
-        print(f"   • Sodré Santoro: {self.stats['sodre']}")
+        print(f"   • Sodré: {self.stats['sodre']}")
         print(f"   • Megaleilões: {self.stats['megaleiloes']}")
-        print(f"   • Superbid (categorias): {self.stats['superbid']}")
-        print(f"   • Superbid (oportunidades): {self.stats['superbid_oportunidades']}")
+        print(f"   • Superbid: {self.stats['superbid']}")
+        print(f"   • Superbid Oportunidades: {self.stats['superbid_oportunidades']}")
         print(f"   • Total bruto: {len(self.items)}")
         print(f"   • Total único: {len(unique_items)}\n")
         
@@ -1055,8 +1038,8 @@ class VeiculosScraper:
         filepath = self.save_json(unique_items)
         print(f"💾 Salvo: {filepath}")
         
-        # Upload para Supabase
-        self.upload_to_supabase(unique_items)
+        # ✅ Upload em batches de 100
+        self.upload_to_supabase_batch(unique_items, batch_size=100)
         
         elapsed = time.time() - start_time
         minutes = int(elapsed // 60)
