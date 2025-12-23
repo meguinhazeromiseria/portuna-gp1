@@ -494,7 +494,7 @@ class VeiculosScraper:
         return items
     
     def _extract_megaleiloes_card(self, card) -> Optional[dict]:
-        """Extrai dados do card"""
+        """Extrai dados do card - PEGA TÍTULO REAL"""
         try:
             link_elem = card.select_one('a[href]')
             if not link_elem:
@@ -519,14 +519,8 @@ class VeiculosScraper:
             
             texto = card.get_text(separator=' ', strip=True)
             
-            title = "Sem título"
-            for selector in ['h1', 'h2', 'h3', 'h4', '.titulo', '.title']:
-                elem = card.select_one(selector)
-                if elem:
-                    t = elem.get_text(strip=True)
-                    if 10 < len(t) < 200:
-                        title = t
-                        break
+            # ✅ EXTRAI TÍTULO REAL
+            title = self._extract_megaleiloes_title(texto, external_id)
             
             value = None
             value_text = None
@@ -548,14 +542,14 @@ class VeiculosScraper:
                     state = uf
             
             city = None
-            city_match = re.search(r'([A-ZÀ-Ú][a-zà-ú\s]+)\s*[-–/]\s*[A-Z]{2}', texto)
+            city_match = re.search(r'([A-ZÀ-Ú][a-zà-ú\s]+)\s*[-–/,]\s*[A-Z]{2}', texto)
             if city_match:
                 city = city_match.group(1).strip()
             
             return {
                 'source': 'megaleiloes',
                 'external_id': external_id,
-                'title': title,
+                'title': title,  # ✅ Título real, não "Sem título"
                 'normalized_title': self._normalize_title(title),
                 'description_preview': texto[:200] if texto else None,
                 'description': texto,
@@ -569,6 +563,48 @@ class VeiculosScraper:
             
         except Exception as e:
             return None
+    
+    def _extract_megaleiloes_title(self, texto: str, external_id: str) -> str:
+        """
+        Extrai título real do Megaleilões
+        
+        Prioridade:
+        1. Descrição: "Carro Ford Ranger - 2014/2014"
+        2. External ID: "carro-ford-ranger-xl-20142014"
+        """
+        # Padrão 1: "Carro/Caminhonete MARCA MODELO - YYYY/YYYY"
+        match = re.search(r'((?:Carro|Caminhonete|Moto|Motocicleta)\s+[A-ZÀ-Ú][A-Za-zÀ-ú0-9\s]+?)\s+-\s+(\d{4})/(\d{4})', texto, re.IGNORECASE)
+        if match:
+            vehicle_part = match.group(1).strip()
+            year1 = match.group(2)
+            year2 = match.group(3)
+            return f"{vehicle_part} {year1}/{year2}"
+        
+        # Padrão 2: Busca marca conhecida
+        brands_pattern = r'(Ford|Fiat|Chevrolet|VW|Volkswagen|Renault|Honda|Toyota|Yamaha|Nissan|Hyundai|Citroen|Peugeot)'
+        match = re.search(rf'((?:Carro|Caminhonete|Moto)\s+{brands_pattern}[A-Za-zÀ-ú0-9\s-]+)', texto, re.IGNORECASE)
+        if match:
+            vehicle_text = match.group(0).strip()
+            # Remove código (J117804 etc)
+            vehicle_text = re.sub(r'\s+[A-Z]\d+.*$', '', vehicle_text)
+            # Remove "Lote X"
+            vehicle_text = re.sub(r'\s+Lote\s+\d+.*$', '', vehicle_text, flags=re.IGNORECASE)
+            return vehicle_text
+        
+        # Fallback: extrai do external_id
+        clean_id = external_id.replace('megaleiloes_', '')
+        clean_id = re.sub(r'-lote-\d+-[a-z]\d+$', '', clean_id, flags=re.IGNORECASE)
+        
+        # Separa ano duplicado
+        year_match = re.search(r'(\d{4})(\d{4})$', clean_id)
+        year_text = ""
+        if year_match:
+            y1, y2 = year_match.groups()
+            year_text = f" {y1}/{y2}"
+            clean_id = clean_id[:year_match.start()]
+        
+        clean_id = clean_id.rstrip('-').replace('-', ' ')
+        return f"{clean_id}{year_text}".strip() or "Veículo"
     
     # ============================================================
     # SUPERBID

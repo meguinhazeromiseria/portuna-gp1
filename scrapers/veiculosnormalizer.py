@@ -89,15 +89,19 @@ class VehicleDataNormalizer:
     
     def _get_display_title(self, item: dict) -> str:
         """
-        Cria título elegante e uniforme
-        PADRÃO: Primeira letra maiúscula, resto minúscula
-        FORMATO: "Ford Ranger Xl 2014/2014"
+        Título SIMPLES - pega o que já vem das fontes e só formata
+        
+        Superbid: "LOTE 39 MOTO CG FAN 125..." → "Moto Cg Fan 125..."
+        Sodré: usa metadata → "Nissan Kicks Sense Cvt 22/23"
+        Megaleilões: extrai da descrição → "Carro Citroen Jumpy..."
         """
         source = item.get('source', '')
         title = item.get('title', '')
         metadata = item.get('metadata', {})
         
-        # === Sodré: Usa metadata estruturado ===
+        # ========================================
+        # SODRÉ: Usa metadata (mais confiável)
+        # ========================================
         if source == 'sodre' and 'veiculo' in metadata:
             veiculo = metadata['veiculo']
             marca = (veiculo.get('marca') or '').strip()
@@ -105,85 +109,84 @@ class VehicleDataNormalizer:
             ano = veiculo.get('ano')
             
             if marca and modelo:
-                # Title case: primeira maiúscula de cada palavra
+                # Title case
                 marca_fmt = marca.title()
                 modelo_fmt = modelo.title()
                 
                 if ano:
-                    return f"{marca_fmt} {modelo_fmt} {ano}/{ano}"
+                    # Ano curto: 2023 → 23
+                    ano_curto = str(ano)[-2:]
+                    return f"{marca_fmt} {modelo_fmt} {ano_curto}/{ano_curto}"
                 return f"{marca_fmt} {modelo_fmt}"
         
-        # === Megaleilões: Extrai do external_id ===
+        # ========================================
+        # MEGALEILÕES: Extrai da descrição
+        # ========================================
         if source == 'megaleiloes':
-            external_id = item.get('external_id', '')
             description = item.get('description', '')
             
-            # Tenta extrair da descrição primeiro (mais limpo)
-            # Ex: "Caminhonete Ford Ranger XL CD4 22H - 2014/2014"
-            desc_match = re.search(r'([A-Za-zÀ-ú\s]+(?:Ford|Fiat|Chevrolet|VW|Volkswagen|Renault|Honda|Toyota|Yamaha|Suzuki)[A-Za-z0-9\s\.\-]+?)\s*-?\s*(\d{4})/(\d{4})', description)
-            if desc_match:
-                vehicle_part = desc_match.group(1).strip()
-                year1 = desc_match.group(2)
-                year2 = desc_match.group(3)
+            # Padrão 1: "Carro/Caminhonete MARCA MODELO - YYYY/YYYY"
+            # Ex: "Carro Citroen Jumpy Furgão PK - 2020/2021"
+            match = re.search(r'((?:Carro|Caminhonete|Moto|Motocicleta)\s+[A-ZÀ-Ú][A-Za-zÀ-ú0-9\s]+?)\s+-\s+(\d{4})/(\d{4})', description, re.IGNORECASE)
+            if match:
+                vehicle_part = match.group(1).strip()
+                year1 = match.group(2)
+                year2 = match.group(3)
+                
                 # Title case
                 vehicle_fmt = vehicle_part.title()
+                
                 return f"{vehicle_fmt} {year1}/{year2}"
             
-            # Fallback: extrai do external_id
-            # Remove prefixo "megaleiloes_"
-            clean_id = external_id.replace('megaleiloes_', '')
+            # Padrão 2: Fallback - busca depois de números e código
+            # Ex: "763 0 Carro Citroen Jumpy Furgão PK - 2020/2021"
+            match = re.search(r'\d+\s+\d+\s+((?:Carro|Caminhonete|Moto)\s+[A-Za-zÀ-ú0-9\s-]+?)\s+[A-Z]\d+', description, re.IGNORECASE)
+            if match:
+                vehicle_text = match.group(1).strip()
+                return vehicle_text.title()
             
-            # Padrão: "caminhonete-ford-ranger-xl-cd4-22h-20142014-lote-38-x118437"
-            # Remove lote-XX-XXXXX do final
-            clean_id = re.sub(r'-lote-\d+-[a-z]\d+$', '', clean_id, flags=re.IGNORECASE)
-            
-            # Extrai ano duplicado (20142014 → 2014/2014)
-            year_match = re.search(r'(\d{4})(\d{4})$', clean_id)
-            year_text = ""
-            if year_match:
-                y1, y2 = year_match.groups()
-                year_text = f" {y1}/{y2}"
-                # Remove do clean_id
-                clean_id = clean_id[:year_match.start()]
-            
-            # Remove hífens finais soltos
-            clean_id = clean_id.rstrip('-')
-            
-            # Substitui hífens por espaços
-            clean_id = clean_id.replace('-', ' ')
-            
-            # Title case (primeira maiúscula de cada palavra)
-            title_parts = clean_id.split()
-            title_formatted = ' '.join(word.capitalize() for word in title_parts)
-            
-            return f"{title_formatted}{year_text}".strip()
+            # Padrão 3: Super fallback - pega qualquer MARCA conhecida
+            brands_pattern = r'(Ford|Fiat|Chevrolet|VW|Volkswagen|Renault|Honda|Toyota|Yamaha|Nissan|Hyundai|Citroen|Peugeot)'
+            match = re.search(rf'((?:Carro|Caminhonete|Moto)\s+{brands_pattern}[A-Za-zÀ-ú0-9\s]+)', description, re.IGNORECASE)
+            if match:
+                vehicle_text = match.group(0).strip()
+                # Remove código no final (J117804 etc)
+                vehicle_text = re.sub(r'\s+[A-Z]\d+.*$', '', vehicle_text)
+                return vehicle_text.title()
         
-        # === Superbid e outros: Limpa e formata título ===
-        if title and title != "Sem título" and len(title) > 10:
+        # ========================================
+        # SUPERBID e outros: Limpa título
+        # ========================================
+        if title and title != "Sem título" and len(title) > 5:
+            clean_title = title
+            
+            # Remove "LOTE XX" do início
+            clean_title = re.sub(r'^LOTE\s+\d+\s+', '', clean_title, flags=re.IGNORECASE)
+            
             # Remove HTML tags
-            clean_title = re.sub(r'<[^>]+>', '', title)
-            clean_title = clean_title.strip()
+            clean_title = re.sub(r'<[^>]+>', '', clean_title)
             
-            # Remove vírgulas, dois pontos, ponto e vírgula
-            clean_title = clean_title.replace(',', '').replace(':', '').replace(';', '')
+            # Remove vírgulas soltas no final
+            clean_title = clean_title.rstrip(',').strip()
             
-            # Remove "Placa FINAL X" do meio do título
-            clean_title = re.sub(r'\s*Placa\s+FINAL\s+\d+\s*\([A-Z]{2}\)\s*', ' ', clean_title, flags=re.IGNORECASE)
-            clean_title = re.sub(r'\s*Placa\s+FINAL\s+\d+\s*', ' ', clean_title, flags=re.IGNORECASE)
+            # Remove "Placa FINAL X (UF)"
+            clean_title = re.sub(r'\s*,?\s*Placa\s+FINAL\s+\d+\s*\([A-Z]{2}\)\s*,?', '', clean_title, flags=re.IGNORECASE)
             
             # Remove espaços duplicados
-            clean_title = re.sub(r'\s+', ' ', clean_title)
+            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
             
-            # Title case: primeira maiúscula de cada palavra
+            # Title case
             clean_title = clean_title.title()
             
             # Trunca se muito longo
             if len(clean_title) > 120:
                 clean_title = clean_title[:117] + '...'
             
-            return clean_title.strip()
+            return clean_title
         
-        # === Fallback ===
+        # ========================================
+        # Fallback
+        # ========================================
         return "Veículo"
     
     def _get_brand(self, item: dict) -> Optional[str]:
