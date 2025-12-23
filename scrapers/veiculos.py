@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 SCRAPER VEÍCULOS - MEGALEILÕES + SUPERBID + SODRÉ SANTORO
-Replicando lógica dos scrapers antigos para categoria veículos
+Versão corrigida com:
+- Bug fix no error handling do Superbid
+- Scraping da página Oportunidades do Superbid (filtro veículos)
 """
 
 import os
@@ -37,12 +39,14 @@ class VeiculosScraper:
             'sodre': 0,
             'megaleiloes': 0,
             'superbid': 0,
+            'superbid_oportunidades': 0,
             'filtered_test_items': 0,
             'filter_details': {
                 'no_store': 0,
                 'demo_seller': 0,
                 'demo_auctioneer': 0,
-                'deploy_text': 0
+                'deploy_text': 0,
+                'test_text': 0
             }
         }
         
@@ -57,6 +61,24 @@ class VeiculosScraper:
         ]
         
         self.compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.test_patterns]
+        
+        # Categorias de veículos conhecidas do Superbid
+        self.vehicle_categories = {
+            'carros-motos': 1,
+            'caminhoes-onibus': 801,
+        }
+        
+        # Palavras-chave para identificar veículos em outras categorias
+        self.vehicle_keywords = [
+            'carro', 'moto', 'veículo', 'veiculo', 'automóvel', 'automovel',
+            'caminhão', 'caminhao', 'ônibus', 'onibus', 'van', 'pickup',
+            'sedan', 'hatch', 'suv', 'truck', 'motocicleta', 'scooter',
+            'utilitário', 'utilitario', 'furgão', 'furgao', 'reboque',
+            'carreta', 'chassis', 'placa', 'chassi', 'honda', 'toyota',
+            'volkswagen', 'ford', 'chevrolet', 'fiat', 'renault', 'nissan',
+            'hyundai', 'jeep', 'bmw', 'mercedes', 'audi', 'volvo', 'scania',
+            'mercedes-benz', 'yamaha', 'suzuki', 'kawasaki', 'ducati'
+        ]
         
         # Cookies da Sodré
         self.sodre_cookies = {}
@@ -92,6 +114,13 @@ class VeiculosScraper:
                 return True, 'test_text'
         
         return False, ''
+    
+    def is_vehicle(self, title: str, description: str = '') -> bool:
+        """
+        Verifica se um item é um veículo baseado no título e descrição
+        """
+        text = f"{title} {description}".lower()
+        return any(keyword in text for keyword in self.vehicle_keywords)
     
     # ============================================================
     # SODRÉ SANTORO - FUNCIONAL (NÃO MEXER)
@@ -573,21 +602,21 @@ class VeiculosScraper:
             return None
     
     # ============================================================
-    # SUPERBID - REPLICANDO LÓGICA DO SCRAPER ANTIGO
+    # SUPERBID - CATEGORIAS ESPECÍFICAS + OPORTUNIDADES
     # ============================================================
     
     def scrape_superbid(self) -> List[dict]:
-        """Scrape Superbid - CATEGORIAS DE VEÍCULOS (replicando lógica antiga)"""
-        print("🔴 SUPERBID")
+        """Scrape Superbid - CATEGORIAS DE VEÍCULOS"""
+        print("🔴 SUPERBID - Categorias Específicas")
         items = []
         
-        # Categorias de veículos (do scraper antigo)
+        # Categorias de veículos
         categories = [
             ('carros-motos', 1),
             ('caminhoes-onibus', 801)
         ]
         
-        # Headers corretos (do scraper antigo)
+        # Headers corretos
         headers = {
             "accept": "*/*",
             "accept-language": "pt-BR,pt;q=0.9",
@@ -605,7 +634,6 @@ class VeiculosScraper:
                 consecutive_errors = 0
                 
                 while page <= 100:  # Limite de segurança
-                    # URL da API (do scraper antigo)
                     url = "https://offer-query.superbid.net/seo/offers/"
                     params = {
                         "urlSeo": f"https://exchange.superbid.net/categorias/{cat_slug}",
@@ -642,19 +670,23 @@ class VeiculosScraper:
                             print(f"    ✅ Fim: página {page} vazia")
                             break
                         
-                        # Processa e filtra
+                        # ✅ FIX: Processa cada oferta com try-except individual
                         valid_count = 0
                         for offer in offers:
-                            cleaned = self._clean_superbid_offer(offer, cat_slug)
-                            if cleaned:
-                                # Aplica filtro anti-teste
-                                is_test, reason = self.is_test_item(cleaned)
-                                if not is_test:
-                                    items.append(cleaned)
-                                    valid_count += 1
-                                else:
-                                    self.stats['filtered_test_items'] += 1
-                                    self.stats['filter_details'][reason] += 1
+                            try:
+                                cleaned = self._clean_superbid_offer(offer, cat_slug)
+                                if cleaned:
+                                    # Aplica filtro anti-teste
+                                    is_test, reason = self.is_test_item(cleaned)
+                                    if not is_test:
+                                        items.append(cleaned)
+                                        valid_count += 1
+                                    else:
+                                        self.stats['filtered_test_items'] += 1
+                                        self.stats['filter_details'][reason] += 1
+                            except Exception as e:
+                                # Erro ao processar oferta individual - continua
+                                continue
                         
                         print(f"    Pág {page}: +{valid_count} | Total: {len(items)}")
                         
@@ -686,24 +718,128 @@ class VeiculosScraper:
         except Exception as e:
             print(f"  ❌ Erro geral: {e}")
         
-        # Mostra estatísticas de filtros
-        if self.stats['filtered_test_items'] > 0:
-            print(f"    🚫 Filtrados {self.stats['filtered_test_items']} itens:")
-            details = self.stats['filter_details']
-            if details['no_store'] > 0:
-                print(f"       • Sem loja: {details['no_store']}")
-            if details['demo_seller'] > 0:
-                print(f"       • Vendedor Demo: {details['demo_seller']}")
-            if details['demo_auctioneer'] > 0:
-                print(f"       • Leiloeiro Demo: {details['demo_auctioneer']}")
-            if details['deploy_text'] > 0:
-                print(f"       • Texto 'deploy': {details['deploy_text']}")
-        
         self.stats['superbid'] = len(items)
         return items
     
+    def scrape_superbid_oportunidades(self) -> List[dict]:
+        """
+        ✨ NOVO: Scrape Superbid Oportunidades - Filtra apenas VEÍCULOS
+        """
+        print("🔴 SUPERBID - Oportunidades (filtro veículos)")
+        items = []
+        
+        headers = {
+            "accept": "*/*",
+            "accept-language": "pt-BR,pt;q=0.9",
+            "origin": "https://exchange.superbid.net",
+            "referer": "https://exchange.superbid.net/",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        
+        try:
+            page = 1
+            consecutive_errors = 0
+            vehicle_count = 0
+            filtered_count = 0
+            
+            while page <= 100:  # Limite de segurança
+                url = "https://offer-query.superbid.net/seo/offers/"
+                params = {
+                    "urlSeo": "https://exchange.superbid.net/oportunidades",
+                    "locale": "pt_BR",
+                    "orderBy": "offerDetail.percentDiffReservedPriceOverFipePrice:asc",
+                    "pageNumber": page,
+                    "pageSize": 100,
+                    "portalId": "[2,15]",
+                    "preOrderBy": "orderByFirstOpenedOffersAndSecondHasPhoto",
+                    "requestOrigin": "marketplace",
+                    "searchType": "openedAll",
+                    "timeZoneId": "America/Sao_Paulo",
+                }
+                
+                try:
+                    r = self.session.get(url, params=params, headers=headers, timeout=45)
+                    
+                    if r.status_code == 404:
+                        print(f"    ✅ Fim: página {page} retornou 404")
+                        break
+                    
+                    if r.status_code != 200:
+                        print(f"    ⚠️ Status {r.status_code}")
+                        consecutive_errors += 1
+                        if consecutive_errors >= 3:
+                            break
+                        time.sleep(5)
+                        continue
+                    
+                    data = r.json()
+                    offers = data.get("offers", [])
+                    
+                    if not offers:
+                        print(f"    ✅ Fim: página {page} vazia")
+                        break
+                    
+                    # Processa cada oferta
+                    valid_count = 0
+                    for offer in offers:
+                        try:
+                            cleaned = self._clean_superbid_offer(offer, 'oportunidades')
+                            if cleaned:
+                                # ✅ FILTRO DE VEÍCULOS
+                                title = cleaned.get('title', '')
+                                desc = cleaned.get('description', '')
+                                
+                                if self.is_vehicle(title, desc):
+                                    # É veículo - aplica filtro anti-teste
+                                    is_test, reason = self.is_test_item(cleaned)
+                                    if not is_test:
+                                        items.append(cleaned)
+                                        valid_count += 1
+                                        vehicle_count += 1
+                                    else:
+                                        self.stats['filtered_test_items'] += 1
+                                        self.stats['filter_details'][reason] += 1
+                                else:
+                                    # Não é veículo - filtra
+                                    filtered_count += 1
+                        except Exception as e:
+                            continue
+                    
+                    if valid_count > 0 or filtered_count > 0:
+                        print(f"    Pág {page}: +{valid_count} veículos ({filtered_count} outros) | Total: {len(items)}")
+                    
+                    if len(offers) < 10:
+                        print(f"    ✅ Última página")
+                        break
+                    
+                    page += 1
+                    consecutive_errors = 0
+                    time.sleep(random.uniform(2, 5))
+                    
+                except requests.exceptions.JSONDecodeError:
+                    print(f"    ⚠️ Erro JSON")
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        break
+                    time.sleep(5)
+                
+                except Exception as e:
+                    print(f"    ❌ Erro: {str(e)[:100]}")
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        break
+                    time.sleep(5)
+            
+            print(f"    ✅ {vehicle_count} veículos encontrados (filtrou {filtered_count} não-veículos)")
+        
+        except Exception as e:
+            print(f"  ❌ Erro geral: {e}")
+        
+        self.stats['superbid_oportunidades'] = len(items)
+        return items
+    
     def _clean_superbid_offer(self, offer: dict, category_slug: str) -> Optional[dict]:
-        """Limpa oferta do Superbid (replicando lógica antiga)"""
+        """Limpa oferta do Superbid"""
         try:
             product = offer.get("product", {})
             auction = offer.get("auction", {})
@@ -848,7 +984,7 @@ class VeiculosScraper:
     def run(self):
         """Executa scraping completo"""
         print("="*60)
-        print("🚗 SCRAPER: VEICULOS - VERSÃO REPLICADA")
+        print("🚗 SCRAPER: VEICULOS - VERSÃO CORRIGIDA")
         print("="*60)
         
         start_time = time.time()
@@ -864,24 +1000,44 @@ class VeiculosScraper:
         
         superbid_items = self.scrape_superbid()
         self.items.extend(superbid_items)
-        print(f"✅ superbid: {len(superbid_items)} itens\n")
+        print(f"✅ superbid (categorias): {len(superbid_items)} itens\n")
+        
+        # ✨ NOVO: Scrape Oportunidades
+        oportunidades_items = self.scrape_superbid_oportunidades()
+        self.items.extend(oportunidades_items)
+        print(f"✅ superbid (oportunidades): {len(oportunidades_items)} itens\n")
         
         # Mostra resumo dos filtros
         if self.stats['filtered_test_items'] > 0:
             print(f"🚫 TOTAL FILTRADO: {self.stats['filtered_test_items']} ofertas de teste/demo")
             details = self.stats['filter_details']
-            print(f"   • Sem loja: {details['no_store']}")
-            print(f"   • Vendedor Demo: {details['demo_seller']}")
-            print(f"   • Leiloeiro Demo: {details['demo_auctioneer']}")
-            print(f"   • Texto 'deploy': {details['deploy_text']}\n")
+            if details['no_store'] > 0:
+                print(f"   • Sem loja: {details['no_store']}")
+            if details['demo_seller'] > 0:
+                print(f"   • Vendedor Demo: {details['demo_seller']}")
+            if details['demo_auctioneer'] > 0:
+                print(f"   • Leiloeiro Demo: {details['demo_auctioneer']}")
+            if details['deploy_text'] > 0:
+                print(f"   • Texto 'deploy': {details['deploy_text']}")
+            if details['test_text'] > 0:
+                print(f"   • Texto 'test/demo': {details['test_text']}")
+            print()
         
         # Remove duplicatas
         unique_items = self.deduplicate(self.items)
         
+        # Resumo por fonte
+        print("📊 RESUMO POR FONTE:")
+        print(f"   • Sodré Santoro: {self.stats['sodre']}")
+        print(f"   • Megaleilões: {self.stats['megaleiloes']}")
+        print(f"   • Superbid (categorias): {self.stats['superbid']}")
+        print(f"   • Superbid (oportunidades): {self.stats['superbid_oportunidades']}")
+        print(f"   • Total bruto: {len(self.items)}")
+        print(f"   • Total único: {len(unique_items)}\n")
+        
         # Salva JSON
         filepath = self.save_json(unique_items)
         print(f"💾 Salvo: {filepath}")
-        print(f"📊 Total: {len(unique_items)} itens únicos\n")
         
         # Upload para Supabase
         self.upload_to_supabase(unique_items)
