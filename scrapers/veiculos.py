@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SCRAPER VEÍCULOS - MEGALEILÕES + SUPERBID + SODRÉ SANTORO
-Versão corrigida com:
-- Bug fix no error handling do Superbid
-- Scraping da página Oportunidades do Superbid (filtro veículos)
+SCRAPER VEÍCULOS - VERSÃO FINAL CORRIGIDA
+- Bug test_text RESOLVIDO
+- Categorias expandidas (patinetes, patins, quadriciclos, etc.)
+- Melhor tratamento de erros Supabase
 """
 
 import os
@@ -62,22 +62,61 @@ class VeiculosScraper:
         
         self.compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.test_patterns]
         
-        # Categorias de veículos conhecidas do Superbid
-        self.vehicle_categories = {
-            'carros-motos': 1,
-            'caminhoes-onibus': 801,
-        }
-        
-        # Palavras-chave para identificar veículos em outras categorias
+        # ✨ CATEGORIAS EXPANDIDAS - Qualquer meio de transporte/mobilidade
         self.vehicle_keywords = [
-            'carro', 'moto', 'veículo', 'veiculo', 'automóvel', 'automovel',
-            'caminhão', 'caminhao', 'ônibus', 'onibus', 'van', 'pickup',
-            'sedan', 'hatch', 'suv', 'truck', 'motocicleta', 'scooter',
-            'utilitário', 'utilitario', 'furgão', 'furgao', 'reboque',
-            'carreta', 'chassis', 'placa', 'chassi', 'honda', 'toyota',
-            'volkswagen', 'ford', 'chevrolet', 'fiat', 'renault', 'nissan',
-            'hyundai', 'jeep', 'bmw', 'mercedes', 'audi', 'volvo', 'scania',
-            'mercedes-benz', 'yamaha', 'suzuki', 'kawasaki', 'ducati'
+            # Carros e derivados
+            'carro', 'celta', 'gol', 'uno', 'palio', 'corsa', 'fiesta', 'ka',
+            'sedan', 'hatch', 'suv', 'crossover', 'picape', 'pickup',
+            'automóvel', 'automovel', 'veículo', 'veiculo',
+            
+            # Motos e similares
+            'moto', 'motocicleta', 'ciclomotor', 'motoneta', 'scooter', 'lambreta',
+            'quadriciclo', 'quadriciclo', 'triciclo', 'moped',
+            
+            # Mobilidade urbana/elétrica
+            'patinete', 'patins', 'skate', 'bike', 'bicicleta', 'velocípede',
+            'segway', 'hoverboard', 'monowheel', 'elétrica', 'eletrica',
+            'bike elétrica', 'bike eletrica', 'e-bike', 'ebike',
+            'patinete elétrico', 'patinete eletrico',
+            
+            # Caminhões e veículos pesados
+            'caminhão', 'caminhao', 'carreta', 'reboque', 'truck',
+            'bitruck', 'rodotrem', 'semi-reboque', 'semi reboque',
+            'caminhonete', 'camioneta',
+            
+            # Ônibus e vans
+            'ônibus', 'onibus', 'micro-ônibus', 'micro onibus', 'microonibus',
+            'van', 'kombi', 'van executiva', 'van escolar',
+            'furgão', 'furgao', 'ambulância', 'ambulancia',
+            
+            # Utilitários
+            'utilitário', 'utilitario', 'trator', 'empilhadeira',
+            'retroescavadeira', 'pá carregadeira', 'pa carregadeira',
+            
+            # Partes e características
+            'placa', 'chassi', 'chassis', 'motor', 'rodas',
+            'km', 'quilometragem', 'kilometragem',
+            
+            # Marcas de carros
+            'toyota', 'volkswagen', 'vw', 'ford', 'chevrolet', 'chevy',
+            'fiat', 'renault', 'nissan', 'hyundai', 'honda', 'jeep',
+            'bmw', 'mercedes', 'mercedes-benz', 'audi', 'volvo', 'peugeot',
+            'citroën', 'citroen', 'mitsubishi', 'suzuki', 'kia', 'mazda',
+            'subaru', 'land rover', 'porsche', 'ferrari', 'lamborghini',
+            'chery', 'caoa', 'jac', 'byd', 'gwm', 'lifan',
+            
+            # Marcas de motos
+            'yamaha', 'suzuki', 'kawasaki', 'ducati', 'harley', 'harley-davidson',
+            'triumph', 'bmw motorrad', 'ktm', 'royal enfield', 'indian',
+            'shineray', 'dafra', 'traxx', 'bull', 'kasinski',
+            
+            # Marcas de caminhões
+            'scania', 'volvo', 'mercedes-benz', 'volkswagen caminhões',
+            'iveco', 'man', 'daf', 'ford cargo',
+            
+            # Marcas de mobilidade elétrica
+            'xiaomi', 'ninebot', 'segway', 'foston', 'two dogs',
+            'atrio', 'multilaser', 'grin', 'yellow',
         ]
         
         # Cookies da Sodré
@@ -117,13 +156,13 @@ class VeiculosScraper:
     
     def is_vehicle(self, title: str, description: str = '') -> bool:
         """
-        Verifica se um item é um veículo baseado no título e descrição
+        Verifica se um item é um veículo/meio de transporte
         """
         text = f"{title} {description}".lower()
         return any(keyword in text for keyword in self.vehicle_keywords)
     
     # ============================================================
-    # SODRÉ SANTORO - FUNCIONAL (NÃO MEXER)
+    # SODRÉ SANTORO
     # ============================================================
     
     def get_sodre_cookies(self) -> dict:
@@ -178,21 +217,17 @@ class VeiculosScraper:
             return {}
     
     def scrape_sodre(self) -> List[dict]:
-        """Scrape Sodré Santoro - MÉTODO CORRETO (usando API search-lots)"""
+        """Scrape Sodré Santoro"""
         print("🔵 SODRÉ SANTORO")
         items = []
         
-        # Captura cookies com Playwright
         self.sodre_cookies = self.get_sodre_cookies()
         
         if not self.sodre_cookies:
             print("  ❌ Sem cookies - pulando Sodré")
             return items
         
-        # Índices de veículos
         indices = ["veiculos", "judiciais-veiculos"]
-        
-        # Configuração da API
         api_url = "https://www.sodresantoro.com.br/api/search-lots"
         
         headers = {
@@ -209,7 +244,6 @@ class VeiculosScraper:
             page_num = 1
             
             while True:
-                # Payload com filtro de status ATIVOS (1, 2, 3)
                 payload = {
                     "indices": indices,
                     "query": {
@@ -218,7 +252,7 @@ class VeiculosScraper:
                             "filter": [
                                 {
                                     "terms": {
-                                        "lot_status_id": [1, 2, 3]  # Apenas ativos
+                                        "lot_status_id": [1, 2, 3]
                                     }
                                 }
                             ],
@@ -263,8 +297,6 @@ class VeiculosScraper:
                 
                 page += 100
                 page_num += 1
-                
-                # Delay entre páginas
                 time.sleep(random.uniform(1.5, 3.0))
         
         except Exception as e:
@@ -274,7 +306,7 @@ class VeiculosScraper:
         return items
     
     def _clean_sodre_item(self, lot: dict) -> Optional[dict]:
-        """Limpa item da Sodré (usando estrutura da API search-lots)"""
+        """Limpa item da Sodré"""
         try:
             lot_id = lot.get('lot_id') or lot.get('id')
             auction_id = lot.get('auction_id')
@@ -283,7 +315,6 @@ class VeiculosScraper:
             if not lot_id or not title:
                 return None
             
-            # ✅ CORREÇÃO CRÍTICA: Valor sempre dividido por 100 (centavos → reais)
             value_raw = lot.get('bid_actual') or lot.get('bid_initial')
             
             if isinstance(value_raw, str):
@@ -297,17 +328,14 @@ class VeiculosScraper:
             else:
                 value = None
             
-            # ✅ SEMPRE divide por 100 (API retorna centavos)
             if value is not None and value > 0:
                 value = value / 100
             
-            # Formata texto
             if value:
                 value_text = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             else:
                 value_text = None
             
-            # Localização
             location = lot.get('lot_location', '') or ''
             city = None
             state = None
@@ -317,11 +345,9 @@ class VeiculosScraper:
                 city = parts[0].strip() if len(parts) > 0 else None
                 state = parts[1].strip() if len(parts) > 1 else None
             
-            # Valida UF
             if state and (len(state) != 2 or not state.isupper()):
                 state = None
             
-            # Data do leilão
             auction_date = None
             days_remaining = None
             
@@ -333,7 +359,6 @@ class VeiculosScraper:
                 except:
                     pass
             
-            # Descrição
             description = lot.get('lot_description', '')
             description_preview = description[:255] if description else title[:255]
             
@@ -384,11 +409,11 @@ class VeiculosScraper:
             return None
     
     # ============================================================
-    # MEGALEILÕES - REPLICANDO LÓGICA DO SCRAPER ANTIGO
+    # MEGALEILÕES
     # ============================================================
     
     def get_megaleiloes_cookies(self) -> List[dict]:
-        """Captura cookies do Megaleilões com Playwright (como no antigo)"""
+        """Captura cookies do Megaleilões"""
         print("  🍪 Capturando cookies Megaleilões...")
         try:
             with sync_playwright() as p:
@@ -423,11 +448,10 @@ class VeiculosScraper:
             return []
     
     def scrape_megaleiloes(self) -> List[dict]:
-        """Scrape Megaleilões - CATEGORIA VEÍCULOS (replicando lógica antiga)"""
+        """Scrape Megaleilões"""
         print("🟢 MEGALEILÕES")
         items = []
         
-        # Captura cookies
         cookies_raw = self.get_megaleiloes_cookies()
         
         try:
@@ -449,8 +473,7 @@ class VeiculosScraper:
                 sem_novos = 0
                 ids_vistos = set()
                 
-                while page_num <= 50:  # Limite de segurança
-                    # URL com paginação
+                while page_num <= 50:
                     if page_num == 1:
                         url = "https://www.megaleiloes.com.br/veiculos"
                     else:
@@ -462,14 +485,12 @@ class VeiculosScraper:
                         page.goto(url, wait_until="domcontentloaded", timeout=60000)
                         time.sleep(random.uniform(3, 5))
                         
-                        # Scroll
                         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                         time.sleep(2)
                         
                         html = page.content()
                         soup = BeautifulSoup(html, 'html.parser')
                         
-                        # Busca cards
                         cards = soup.select('div.card, .leilao-card, div[class*="card"]')
                         
                         if not cards:
@@ -520,7 +541,6 @@ class VeiculosScraper:
     def _extract_megaleiloes_card(self, card) -> Optional[dict]:
         """Extrai dados do card do Megaleilões"""
         try:
-            # Link
             link_elem = card.select_one('a[href]')
             if not link_elem:
                 return None
@@ -532,7 +552,6 @@ class VeiculosScraper:
             if not link.startswith('http'):
                 link = f"https://www.megaleiloes.com.br{link}"
             
-            # ID do link
             external_id = None
             parts = link.rstrip('/').split('/')
             for part in reversed(parts):
@@ -543,10 +562,8 @@ class VeiculosScraper:
             if not external_id:
                 external_id = f"megaleiloes_{abs(hash(link)) % 10000000}"
             
-            # Texto completo
             texto = card.get_text(separator=' ', strip=True)
             
-            # Título
             title = "Sem título"
             for selector in ['h1', 'h2', 'h3', 'h4', '.titulo', '.title']:
                 elem = card.select_one(selector)
@@ -556,7 +573,6 @@ class VeiculosScraper:
                         title = t
                         break
             
-            # Preço
             value = None
             value_text = None
             price_match = re.search(r'R\$\s*([\d.]+,\d{2})', texto)
@@ -567,7 +583,6 @@ class VeiculosScraper:
                 except:
                     pass
             
-            # Estado
             state = None
             state_match = re.search(r'\b([A-Z]{2})\b', texto)
             if state_match:
@@ -577,7 +592,6 @@ class VeiculosScraper:
                 if uf in valid_states:
                     state = uf
             
-            # Cidade
             city = None
             city_match = re.search(r'([A-ZÀ-Ú][a-zà-ú\s]+)\s*[-–/]\s*[A-Z]{2}', texto)
             if city_match:
@@ -602,21 +616,19 @@ class VeiculosScraper:
             return None
     
     # ============================================================
-    # SUPERBID - CATEGORIAS ESPECÍFICAS + OPORTUNIDADES
+    # SUPERBID - CATEGORIAS + OPORTUNIDADES
     # ============================================================
     
     def scrape_superbid(self) -> List[dict]:
-        """Scrape Superbid - CATEGORIAS DE VEÍCULOS"""
-        print("🔴 SUPERBID - Categorias Específicas")
+        """Scrape Superbid - Categorias específicas"""
+        print("🔴 SUPERBID - Categorias")
         items = []
         
-        # Categorias de veículos
         categories = [
             ('carros-motos', 1),
             ('caminhoes-onibus', 801)
         ]
         
-        # Headers corretos
         headers = {
             "accept": "*/*",
             "accept-language": "pt-BR,pt;q=0.9",
@@ -633,7 +645,7 @@ class VeiculosScraper:
                 page = 1
                 consecutive_errors = 0
                 
-                while page <= 100:  # Limite de segurança
+                while page <= 100:
                     url = "https://offer-query.superbid.net/seo/offers/"
                     params = {
                         "urlSeo": f"https://exchange.superbid.net/categorias/{cat_slug}",
@@ -670,13 +682,12 @@ class VeiculosScraper:
                             print(f"    ✅ Fim: página {page} vazia")
                             break
                         
-                        # ✅ FIX: Processa cada oferta com try-except individual
+                        # ✅ FIX DEFINITIVO: Try-except INDIVIDUAL para cada oferta
                         valid_count = 0
                         for offer in offers:
                             try:
                                 cleaned = self._clean_superbid_offer(offer, cat_slug)
                                 if cleaned:
-                                    # Aplica filtro anti-teste
                                     is_test, reason = self.is_test_item(cleaned)
                                     if not is_test:
                                         items.append(cleaned)
@@ -684,9 +695,9 @@ class VeiculosScraper:
                                     else:
                                         self.stats['filtered_test_items'] += 1
                                         self.stats['filter_details'][reason] += 1
-                            except Exception as e:
-                                # Erro ao processar oferta individual - continua
-                                continue
+                            except Exception:
+                                # Silenciosamente ignora erro individual
+                                pass
                         
                         print(f"    Pág {page}: +{valid_count} | Total: {len(items)}")
                         
@@ -723,9 +734,9 @@ class VeiculosScraper:
     
     def scrape_superbid_oportunidades(self) -> List[dict]:
         """
-        ✨ NOVO: Scrape Superbid Oportunidades - Filtra apenas VEÍCULOS
+        Scrape Superbid Oportunidades - Filtra veículos e mobilidade
         """
-        print("🔴 SUPERBID - Oportunidades (filtro veículos)")
+        print("🔴 SUPERBID - Oportunidades")
         items = []
         
         headers = {
@@ -742,7 +753,7 @@ class VeiculosScraper:
             vehicle_count = 0
             filtered_count = 0
             
-            while page <= 100:  # Limite de segurança
+            while page <= 100:
                 url = "https://offer-query.superbid.net/seo/offers/"
                 params = {
                     "urlSeo": "https://exchange.superbid.net/oportunidades",
@@ -785,12 +796,11 @@ class VeiculosScraper:
                         try:
                             cleaned = self._clean_superbid_offer(offer, 'oportunidades')
                             if cleaned:
-                                # ✅ FILTRO DE VEÍCULOS
                                 title = cleaned.get('title', '')
                                 desc = cleaned.get('description', '')
                                 
+                                # Verifica se é veículo/mobilidade
                                 if self.is_vehicle(title, desc):
-                                    # É veículo - aplica filtro anti-teste
                                     is_test, reason = self.is_test_item(cleaned)
                                     if not is_test:
                                         items.append(cleaned)
@@ -800,10 +810,9 @@ class VeiculosScraper:
                                         self.stats['filtered_test_items'] += 1
                                         self.stats['filter_details'][reason] += 1
                                 else:
-                                    # Não é veículo - filtra
                                     filtered_count += 1
-                        except Exception as e:
-                            continue
+                        except Exception:
+                            pass
                     
                     if valid_count > 0 or filtered_count > 0:
                         print(f"    Pág {page}: +{valid_count} veículos ({filtered_count} outros) | Total: {len(items)}")
@@ -851,11 +860,9 @@ class VeiculosScraper:
             external_id = f"superbid_{offer_id}"
             title = (product.get("shortDesc") or "Sem título").strip()
             
-            # Valor
             value = detail.get("currentMinBid") or detail.get("initialBidValue")
             value_text = detail.get("currentMinBidFormatted") or detail.get("initialBidValueFormatted")
             
-            # Localização
             city = None
             state = None
             seller_city = seller.get("city", "") or ""
@@ -872,11 +879,9 @@ class VeiculosScraper:
             if state and (len(state) != 2 or not state.isupper()):
                 state = None
             
-            # Descrição
             full_desc = offer.get("offerDescription", {}).get("offerDescription", "")
             description_preview = full_desc[:150] if full_desc else title[:150]
             
-            # Data
             auction_date = None
             days_remaining = None
             end_date_str = offer.get("endDate")
@@ -947,24 +952,36 @@ class VeiculosScraper:
         return filepath
     
     def upload_to_supabase(self, items: List[dict]):
-        """Upload para Supabase no schema auctions.veiculos"""
+        """Upload para Supabase com melhor tratamento de erros"""
         print("\n📤 Enviando para Supabase (auctions.veiculos)...")
+        
+        if not items:
+            print("  ⚠️ Nenhum item para enviar")
+            return
         
         try:
             client = SupabaseClient()
-            
-            # ✅ IMPORTANTE: Usa a tabela auctions.veiculos
-            table_name = 'veiculos'  # O cliente deve adicionar o schema automaticamente
+            table_name = 'veiculos'
             
             stats = client.upsert(table_name, items)
             
             print(f"  ✅ {stats['inserted']} novos, {stats['updated']} atualizados, {stats['errors']} erros")
             
             if stats['errors'] > 0:
-                print(f"  ⚠️ Alguns itens falharam - verifique os logs acima")
-        
+                print(f"\n  ⚠️ ATENÇÃO: {stats['errors']} itens falharam")
+                print(f"  💡 Se erro de permissão, execute: fix_supabase_permissions.sql")
+                
         except Exception as e:
-            print(f"  ❌ Erro ao enviar: {e}")
+            error_msg = str(e)
+            print(f"  ❌ Erro ao enviar: {error_msg}")
+            
+            if 'permission denied' in error_msg.lower():
+                print(f"\n  🔧 SOLUÇÃO:")
+                print(f"     1. Execute o script: fix_supabase_permissions.sql no Supabase")
+                print(f"     2. Ou execute manualmente:")
+                print(f"        GRANT USAGE ON SCHEMA auctions TO anon, authenticated, service_role;")
+                print(f"        GRANT ALL ON auctions.veiculos TO anon, authenticated, service_role;")
+            
             import traceback
             traceback.print_exc()
     
@@ -984,7 +1001,7 @@ class VeiculosScraper:
     def run(self):
         """Executa scraping completo"""
         print("="*60)
-        print("🚗 SCRAPER: VEICULOS - VERSÃO CORRIGIDA")
+        print("🚗 SCRAPER: VEICULOS - VERSÃO FINAL")
         print("="*60)
         
         start_time = time.time()
@@ -992,20 +1009,19 @@ class VeiculosScraper:
         # Scrape cada fonte
         sodre_items = self.scrape_sodre()
         self.items.extend(sodre_items)
-        print(f"✅ sodre: {len(sodre_items)} itens\n")
+        print(f"✅ Sodré: {len(sodre_items)} itens\n")
         
         megaleiloes_items = self.scrape_megaleiloes()
         self.items.extend(megaleiloes_items)
-        print(f"✅ megaleiloes: {len(megaleiloes_items)} itens\n")
+        print(f"✅ Megaleilões: {len(megaleiloes_items)} itens\n")
         
         superbid_items = self.scrape_superbid()
         self.items.extend(superbid_items)
-        print(f"✅ superbid (categorias): {len(superbid_items)} itens\n")
+        print(f"✅ Superbid (categorias): {len(superbid_items)} itens\n")
         
-        # ✨ NOVO: Scrape Oportunidades
         oportunidades_items = self.scrape_superbid_oportunidades()
         self.items.extend(oportunidades_items)
-        print(f"✅ superbid (oportunidades): {len(oportunidades_items)} itens\n")
+        print(f"✅ Superbid (oportunidades): {len(oportunidades_items)} itens\n")
         
         # Mostra resumo dos filtros
         if self.stats['filtered_test_items'] > 0:
