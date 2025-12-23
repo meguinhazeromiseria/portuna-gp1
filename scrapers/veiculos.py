@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 SCRAPER VEÍCULOS - MEGALEILÕES + SUPERBID + SODRÉ SANTORO
-Versão corrigida para schema auctions (tabelas separadas)
+Versão mesclada: Sodré funcional (código 1) + outros scrapers (código 2)
 """
 
 import os
@@ -21,7 +21,7 @@ from supabase_client import SupabaseClient
 
 
 class VeiculosScraper:
-    """Scraper unificado para MegaleilÃµes, Superbid e SodrÃ© Santoro"""
+    """Scraper unificado para Megaleilões, Superbid e Sodré Santoro"""
     
     def __init__(self):
         self.session = requests.Session()
@@ -52,7 +52,7 @@ class VeiculosScraper:
             r'\btest\b',
             r'\bdeploy\b',
             r'^teste',
-            r'demonstra[cção][aã]o',
+            r'demonstra[cç][aã]o',
         ]
         
         self.compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.test_patterns]
@@ -92,8 +92,12 @@ class VeiculosScraper:
         
         return False, ''
     
+    # ============================================================
+    # SODRÉ SANTORO - FUNCIONAL (do código 1)
+    # ============================================================
+    
     def get_sodre_cookies(self) -> dict:
-        """Captura cookies da Sodré usando Playwright (como no antigo)"""
+        """Captura cookies da Sodré usando Playwright"""
         print("  🍪 Capturando cookies Sodré...")
         try:
             with sync_playwright() as p:
@@ -155,7 +159,7 @@ class VeiculosScraper:
             print("  ❌ Sem cookies - pulando Sodré")
             return items
         
-        # Índices de veículos (como no antigo)
+        # Índices de veículos
         indices = ["veiculos", "judiciais-veiculos"]
         
         # Configuração da API
@@ -237,122 +241,6 @@ class VeiculosScraper:
             print(f"  ❌ Erro: {e}")
         
         self.stats['sodre'] = len(items)
-        return items
-    
-    def scrape_megaleiloes(self) -> List[dict]:
-        """Scrape MegaleilÃµes"""
-        print("🟢 MEGALEILÕES")
-        items = []
-        
-        try:
-            page = 1
-            while True:
-                url = f'https://www.megaleiloes.com.br/api/products/search?includeImages=1&size=60&page={page}&onlyWithImage=true&sortKey=DATE_DESC&type=VEHICLE'
-                
-                r = self.session.get(url, timeout=30)
-                r.raise_for_status()
-                data = r.json()
-                
-                results = data.get('result', [])
-                if not results:
-                    break
-                
-                for item in results:
-                    cleaned = self._clean_megaleiloes_item(item)
-                    if cleaned:
-                        items.append(cleaned)
-                
-                print(f"  Pág {page}: +{len(results)} | Total: {len(items)}")
-                
-                if len(results) < 60:
-                    break
-                
-                page += 1
-                time.sleep(1)
-        
-        except Exception as e:
-            print(f"  ❌ Erro: {e}")
-        
-        self.stats['megaleiloes'] = len(items)
-        return items
-    
-    def scrape_superbid(self) -> List[dict]:
-        """Scrape Superbid com filtros anti-teste"""
-        print("🔴 SUPERBID")
-        items = []
-        
-        categories = [
-            ('carros-motos', 1),
-            ('caminhoes-onibus', 801)
-        ]
-        
-        try:
-            for cat_slug, cat_id in categories:
-                print(f"  📦 {cat_slug}")
-                items_before = len(items)
-                
-                page = 1
-                while True:
-                    url = f'https://www.superbid.net/api/catalog/v2/categories/{cat_id}/lots?page={page}'
-                    
-                    try:
-                        r = self.session.get(url, timeout=30)
-                        
-                        if r.status_code == 404:
-                            print(f"    ✅ Fim: página {page} retornou 404")
-                            break
-                        
-                        r.raise_for_status()
-                        data = r.json()
-                        results = data.get('results', [])
-                        
-                        if not results:
-                            break
-                        
-                        # Processa e filtra itens
-                        valid_count = 0
-                        for item in results:
-                            cleaned = self._clean_superbid_item(item)
-                            if cleaned:
-                                # Aplica filtro anti-teste
-                                is_test, reason = self.is_test_item(cleaned)
-                                if not is_test:
-                                    items.append(cleaned)
-                                    valid_count += 1
-                                else:
-                                    self.stats['filtered_test_items'] += 1
-                                    self.stats['filter_details'][reason] += 1
-                        
-                        print(f"    Pág {page}: +{valid_count} válidos | Total: {len(items)}")
-                        
-                        page += 1
-                        time.sleep(1)
-                    
-                    except requests.exceptions.HTTPError as e:
-                        if e.response.status_code == 404:
-                            print(f"    ✅ Fim: página {page} retornou 404")
-                            break
-                        raise
-                
-                cat_items = len(items) - items_before
-        
-        except Exception as e:
-            print(f"  ❌ Erro: {e}")
-        
-        # Mostra estatísticas de filtros
-        if self.stats['filtered_test_items'] > 0:
-            print(f"    🚫 Filtrados {self.stats['filtered_test_items']} itens de teste/demo:")
-            details = self.stats['filter_details']
-            if details['no_store'] > 0:
-                print(f"       • Sem loja: {details['no_store']}")
-            if details['demo_seller'] > 0:
-                print(f"       • Vendedor Demo: {details['demo_seller']}")
-            if details['demo_auctioneer'] > 0:
-                print(f"       • Leiloeiro Demo: {details['demo_auctioneer']}")
-            if details['deploy_text'] > 0:
-                print(f"       • Texto 'deploy': {details['deploy_text']}")
-        
-        self.stats['superbid'] = len(items)
         return items
     
     def _clean_sodre_item(self, lot: dict) -> Optional[dict]:
@@ -465,8 +353,49 @@ class VeiculosScraper:
             print(f"  ⚠️ Erro ao limpar item Sodré: {e}")
             return None
     
+    # ============================================================
+    # MEGALEILÕES - FUNCIONAL (do código 2)
+    # ============================================================
+    
+    def scrape_megaleiloes(self) -> List[dict]:
+        """Scrape Megaleilões"""
+        print("🟢 MEGALEILÕES")
+        items = []
+        
+        try:
+            page = 1
+            while True:
+                url = f'https://www.megaleiloes.com.br/api/products/search?includeImages=1&size=60&page={page}&onlyWithImage=true&sortKey=DATE_DESC&type=VEHICLE'
+                
+                r = self.session.get(url, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+                
+                results = data.get('result', [])
+                if not results:
+                    break
+                
+                for item in results:
+                    cleaned = self._clean_megaleiloes_item(item)
+                    if cleaned:
+                        items.append(cleaned)
+                
+                print(f"  Pág {page}: +{len(results)} | Total: {len(items)}")
+                
+                if len(results) < 60:
+                    break
+                
+                page += 1
+                time.sleep(1)
+        
+        except Exception as e:
+            print(f"  ❌ Erro: {e}")
+        
+        self.stats['megaleiloes'] = len(items)
+        return items
+    
     def _clean_megaleiloes_item(self, item: dict) -> Optional[dict]:
-        """Limpa item do MegaleilÃµes"""
+        """Limpa item do Megaleilões"""
         try:
             item_id = item.get('id')
             title = item.get('name', '').strip()
@@ -508,6 +437,89 @@ class VeiculosScraper:
             }
         except:
             return None
+    
+    # ============================================================
+    # SUPERBID - FUNCIONAL (do código 2)
+    # ============================================================
+    
+    def scrape_superbid(self) -> List[dict]:
+        """Scrape Superbid com filtros anti-teste"""
+        print("🔴 SUPERBID")
+        items = []
+        
+        categories = [
+            ('carros-motos', 1),
+            ('caminhoes-onibus', 801)
+        ]
+        
+        try:
+            for cat_slug, cat_id in categories:
+                print(f"  📦 {cat_slug}")
+                items_before = len(items)
+                
+                page = 1
+                while True:
+                    url = f'https://www.superbid.net/api/catalog/v2/categories/{cat_id}/lots?page={page}'
+                    
+                    try:
+                        r = self.session.get(url, timeout=30)
+                        
+                        if r.status_code == 404:
+                            print(f"    ✅ Fim: página {page} retornou 404")
+                            break
+                        
+                        r.raise_for_status()
+                        data = r.json()
+                        results = data.get('results', [])
+                        
+                        if not results:
+                            break
+                        
+                        # Processa e filtra itens
+                        valid_count = 0
+                        for item in results:
+                            cleaned = self._clean_superbid_item(item)
+                            if cleaned:
+                                # Aplica filtro anti-teste
+                                is_test, reason = self.is_test_item(cleaned)
+                                if not is_test:
+                                    items.append(cleaned)
+                                    valid_count += 1
+                                else:
+                                    self.stats['filtered_test_items'] += 1
+                                    self.stats['filter_details'][reason] += 1
+                        
+                        print(f"    Pág {page}: +{valid_count} válidos | Total: {len(items)}")
+                        
+                        page += 1
+                        time.sleep(1)
+                    
+                    except requests.exceptions.HTTPError as e:
+                        if e.response.status_code == 404:
+                            print(f"    ✅ Fim: página {page} retornou 404")
+                            break
+                        raise
+                
+                cat_items = len(items) - items_before
+        
+        except Exception as e:
+            print(f"  ❌ Erro: {e}")
+        
+        # Mostra estatísticas de filtros
+        if self.stats['filtered_test_items'] > 0:
+            print(f"    🚫 Filtrados {self.stats['filtered_test_items']} itens de teste/demo:")
+            details = self.stats['filter_details']
+            if details['no_store'] > 0:
+                print(f"       • Sem loja: {details['no_store']}")
+            if details['demo_seller'] > 0:
+                print(f"       • Vendedor Demo: {details['demo_seller']}")
+            if details['demo_auctioneer'] > 0:
+                print(f"       • Leiloeiro Demo: {details['demo_auctioneer']}")
+            if details['deploy_text'] > 0:
+                print(f"       • Texto 'deploy': {details['deploy_text']}")
+        
+        self.stats['superbid'] = len(items)
+        return items
     
     def _clean_superbid_item(self, item: dict) -> Optional[dict]:
         """Limpa item do Superbid"""
@@ -579,6 +591,10 @@ class VeiculosScraper:
         except:
             return None
     
+    # ============================================================
+    # MÉTODOS AUXILIARES
+    # ============================================================
+    
     def _normalize_title(self, title: str) -> str:
         """Normaliza título para busca"""
         if not title:
@@ -639,7 +655,7 @@ class VeiculosScraper:
     def run(self):
         """Executa scraping completo"""
         print("="*60)
-        print("🚗 SCRAPER: VEICULOS - VERSÃO CORRIGIDA")
+        print("🚗 SCRAPER: VEICULOS - VERSÃO MESCLADA")
         print("="*60)
         
         start_time = time.time()
